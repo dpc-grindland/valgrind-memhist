@@ -10,7 +10,8 @@ TOOLS =		memcheck \
 		lackey \
 		none \
 		helgrind \
-		drd
+		drd \
+		memhist
 
 EXP_TOOLS = 	exp-sgcheck \
 		exp-bbv \
