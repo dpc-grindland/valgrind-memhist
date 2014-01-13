@@ -151,12 +151,13 @@ struct mh_mem_access_t
 
 struct mh_track_mem_block_t
 {
-	struct mh_track_mem_block_t* next;
-	Addr start;
-	Addr end;
-	unsigned granularity;  /* in bytes */
-	unsigned vec_len;
-	struct mh_mem_access_t access_vec[0];
+    struct mh_track_mem_block_t* next;
+    Addr start;
+    Addr end;
+    unsigned birth_time_stamp;
+    unsigned granularity;  /* in bytes */
+    unsigned vec_len;
+    struct mh_mem_access_t access_vec[0];
 };
 
 static struct mh_track_mem_block_t* mh_track_list;
@@ -507,6 +508,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned granularity) {
 	VG_(malloc)("track_mem_write", sizeof(*tmb) + vec_len * sizeof(*tmb->access_vec));
     tmb->start = addr;
     tmb->end = addr + size;
+    tmb->birth_time_stamp = mh_logical_time++;
     tmb->granularity = granularity;
     tmb->vec_len = vec_len;
     for (i = 0; i < vec_len; i++) {
@@ -569,22 +571,24 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 
 static void mh_fini(Int exitcode)
 {
-	struct mh_track_mem_block_t* tmb;
+    struct mh_track_mem_block_t* tmb;
 
-	for (tmb = mh_track_list; tmb; tmb=tmb->next) {
-		unsigned ix = 0;
-		Addr addr = tmb->start;
-		for (addr=tmb->start; addr < tmb->end; ix++, addr += tmb->granularity) {
-			if (tmb->access_vec[ix].call_stack) {
-				VG_(umsg) ("%u-bytes at address %p written at time %u by:\n",
-						   tmb->granularity, (void*)addr, tmb->access_vec[ix].time_stamp);
-				VG_(pp_ExeContext)(tmb->access_vec[ix].call_stack);
-			}
-			else {
-				VG_(umsg) ("%u-bytes at %p not written.\n", tmb->granularity, (void*)addr);
-			}
-		}
+    for (tmb = mh_track_list; tmb; tmb=tmb->next) {
+	unsigned ix = 0;
+	Addr addr = tmb->start;
+	VG_(umsg) ("Memhist tracking from %p to %p with granularity %u created at time %u.\n",
+		   tmb->start, tmb->end, tmb->granularity, tmb->birth_time_stamp);
+	for (addr=tmb->start; addr < tmb->end; ix++, addr += tmb->granularity) {
+	    if (tmb->access_vec[ix].call_stack) {
+		VG_(umsg) ("%u-bytes at address %p written at time %u by:\n",
+			   tmb->granularity, (void*)addr, tmb->access_vec[ix].time_stamp);
+		VG_(pp_ExeContext)(tmb->access_vec[ix].call_stack);
+	    }
+	    else {
+		VG_(umsg) ("%u-bytes at %p not written.\n", tmb->granularity, (void*)addr);
+	    }
 	}
+    }
 }
 
 static void mh_pre_clo_init(void)
