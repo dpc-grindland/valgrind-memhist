@@ -176,6 +176,7 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
     Addr start = addr;
     Addr end = addr + size;
     struct mh_track_mem_block_t *tmb;
+    int got_a_hit = 0;
 
     for (tmb = mh_track_list; tmb; tmb = tmb->next) {
 	if (end > tmb->start && start < tmb->end) {
@@ -194,7 +195,6 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 		tl_assert(start_ix < end_ix);
 		tl_assert(end_ix <= tmb->vec_len);
 
-		++mh_logical_time;
 		if (clo_trace_mem) {
 		    VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
 			      (unsigned)size, (void *)addr, mh_logical_time);
@@ -205,10 +205,14 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 		    tmb->access_vec[ix].call_stack = ec;
 		    tmb->access_vec[ix].time_stamp = mh_logical_time;
 		}
+		start = addr;
+		end = addr + size;
+		got_a_hit = 1;
 	    }
-	    break;
 	}
     }
+    if (got_a_hit)
+	++mh_logical_time;
 }
 
 /*static VG_REGPARM(2) void track_modify(Addr addr, SizeT size)
@@ -587,9 +591,9 @@ static void mh_pre_clo_init(void)
 {
    VG_(details_name)            ("Memhist");
    VG_(details_version)         (NULL);
-   VG_(details_description)     ("Sverker's Valgrind tool");
+   VG_(details_description)     ("Sverker's Valgrind tool for tracking memory access history");
    VG_(details_copyright_author)(
-      "Copyright (C) 2011, and GNU GPL'd, by Sverker Eriksson.");
+      "Copyright (C) 2014, and GNU GPL'd, by Sverker Eriksson.");
    VG_(details_bug_reports_to)  (VG_BUGS_TO);
    VG_(details_avg_translation_sizeB) ( 200 );
 
