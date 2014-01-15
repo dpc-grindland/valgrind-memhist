@@ -2,9 +2,9 @@
 
 #include "valgrind/memhist.h"
 
-void bar(int** p)
+void bar(int** p, int* value)
 {
-  *p = NULL;
+  *p = value;
 }
 
 int foo()
@@ -12,7 +12,7 @@ int foo()
   static int* vec[10];
   int i;
 
-  VALGRIND_TRACK_MEM_WRITE(vec, 10*sizeof(int*), sizeof(int*));
+  VALGRIND_TRACK_MEM_WRITE(vec, 10*sizeof(int*), sizeof(int*), 3);
   //VALGRIND_TRACK_MEM_WRITE(vec+5, 5*sizeof(int), 1);
 
   for (i=0; i<10; i++)
@@ -20,7 +20,14 @@ int foo()
       vec[i] = &i;
     }
 
-  bar(&vec[7]);
+  bar(&vec[7], NULL);
+
+  bar(&vec[3], &i);
+  bar(&vec[3], &i);
+
+  bar(&vec[4], &i);
+  bar(&vec[4], &i);
+  bar(&vec[4], &i);
 
   //VALGRIND_UNTRACK_MEM_WRITE(vec, 5*sizeof(int));
 

@@ -144,8 +144,9 @@ static Int   events_used = 0;
 
 struct mh_mem_access_t
 {
-	ExeContext* call_stack;
-	unsigned time_stamp;
+    unsigned hist_ix;  /* memory waste, should be moved to own vector */
+    ExeContext* call_stack;
+    unsigned time_stamp;
 };
 
 
@@ -156,7 +157,8 @@ struct mh_track_mem_block_t
     Addr end;
     unsigned birth_time_stamp;
     unsigned granularity;  /* in bytes */
-    unsigned vec_len;
+    unsigned vec_len; /* #columns */
+    unsigned history; /* #rows */
     struct mh_mem_access_t access_vec[0];
 };
 
@@ -184,7 +186,7 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 	    if (tmb->vec_len) {  // enabled?
 		ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
 		ExeContext *ec = VG_(record_ExeContext)(tid, 0);
-		unsigned start_ix, end_ix, ix;
+		unsigned start_ix, end_ix, ix, j;
 
 		if (start < tmb->start)
 		    start = tmb->start;
@@ -203,8 +205,12 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 		}
 
 		for (ix = start_ix; ix < end_ix; ix++) {
-		    tmb->access_vec[ix].call_stack = ec;
-		    tmb->access_vec[ix].time_stamp = mh_logical_time;
+		    j = ix + tmb->vec_len * tmb->access_vec[ix].hist_ix++;
+		    if (tmb->access_vec[ix].hist_ix >= tmb->history)
+			tmb->access_vec[ix].hist_ix = 0;
+
+		    tmb->access_vec[j].call_stack = ec;
+		    tmb->access_vec[j].time_stamp = mh_logical_time;
 		}
 		start = addr;
 		end = addr + size;
@@ -501,17 +507,20 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
 }
 
 
-static void track_mem_write(Addr addr, SizeT size, unsigned granularity) {
+static void track_mem_write(Addr addr, SizeT size, unsigned granularity, unsigned history)
+{
     unsigned vec_len = (size + granularity - 1) / granularity;
     unsigned i;
     struct mh_track_mem_block_t *tmb =
-	VG_(malloc)("track_mem_write", sizeof(*tmb) + vec_len * sizeof(*tmb->access_vec));
+	VG_(malloc)("track_mem_write", sizeof(*tmb) + history * vec_len * sizeof(*tmb->access_vec));
     tmb->start = addr;
     tmb->end = addr + size;
     tmb->birth_time_stamp = mh_logical_time++;
     tmb->granularity = granularity;
     tmb->vec_len = vec_len;
-    for (i = 0; i < vec_len; i++) {
+    tmb->history = history;
+    for (i = 0; i < history*vec_len; i++) {
+	tmb->access_vec[i].hist_ix = 0;  /* only first 'row' is used */
 	tmb->access_vec[i].call_stack = NULL;
 	tmb->access_vec[i].time_stamp = 0;
     }
@@ -550,7 +559,7 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 
    switch (arg[0]) {
       case VG_USERREQ__TRACK_MEM_WRITE:
-         track_mem_write (arg[1], arg[2], arg[3]);
+	  track_mem_write (arg[1], arg[2], arg[3], arg[4]);
          *ret = -1;
          break;
       case VG_USERREQ__UNTRACK_MEM_WRITE:
@@ -576,16 +585,36 @@ static void mh_fini(Int exitcode)
     for (tmb = mh_track_list; tmb; tmb=tmb->next) {
 	unsigned ix = 0;
 	Addr addr = tmb->start;
-	VG_(umsg) ("Memhist tracking from %p to %p with granularity %u created at time %u.\n",
-		   tmb->start, tmb->end, tmb->granularity, tmb->birth_time_stamp);
+	VG_(umsg) ("Memhist tracking from %p to %p with granularity %u "
+		   "and history %u created at time %u.\n",
+		   (void*)tmb->start, (void*)tmb->end, tmb->granularity,
+		   tmb->history, tmb->birth_time_stamp);
 	for (addr=tmb->start; addr < tmb->end; ix++, addr += tmb->granularity) {
-	    if (tmb->access_vec[ix].call_stack) {
-		VG_(umsg) ("%u-bytes at address %p written at time %u by:\n",
-			   tmb->granularity, (void*)addr, tmb->access_vec[ix].time_stamp);
-		VG_(pp_ExeContext)(tmb->access_vec[ix].call_stack);
-	    }
-	    else {
-		VG_(umsg) ("%u-bytes at %p not written.\n", tmb->granularity, (void*)addr);
+	    unsigned h;
+	    int hist_ix = tmb->access_vec[ix].hist_ix - 1;
+
+	    for (h=0; h < tmb->history; h++, hist_ix--) {
+		struct mh_mem_access_t* ap;
+
+		if (hist_ix < 0)
+		    hist_ix = tmb->history - 1;
+
+		ap = &tmb->access_vec[ix + tmb->vec_len * hist_ix];
+		if (ap->call_stack) {
+		    if (!h) {
+			VG_(umsg) ("%u-bytes at address %p written at time %u:\n",
+				   tmb->granularity, (void*)addr, ap->time_stamp);
+		    }
+		    else {
+			VG_(umsg) ("       AND at time %u:\n", ap->time_stamp);
+		    }
+		    VG_(pp_ExeContext)(ap->call_stack);
+		}
+		else {
+		    if (!h)
+			VG_(umsg) ("%u-bytes at %p not written.\n", tmb->granularity, (void*)addr);
+		    break;
+		}
 	    }
 	}
     }
