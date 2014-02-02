@@ -60,19 +60,19 @@ static Bool mh_process_cmd_line_option(const HChar* arg)
    if VG_BOOL_CLO(arg, "--trace-mem", clo_trace_mem) {}
    else
       return False;
-   
+
    return True;
 }
 
 static void mh_print_usage(void)
-{  
+{
    VG_(printf)(
 "    --trace-mem=no|yes        trace all stores [no]\n"
    );
 }
 
 static void mh_print_debug_usage(void)
-{  
+{
    VG_(printf)("    (none)\n");
 }
 
@@ -90,10 +90,10 @@ typedef enum { OpLoad=0, OpStore=1, OpAlu=2 } Op;
 #define MAX_DSIZE    512
 
 typedef
-   IRExpr 
+   IRExpr
    IRAtom;
 
-typedef 
+typedef
    enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm }
    EventKind;
 
@@ -240,7 +240,7 @@ static void flushEvents(IRSB* sb)
    for (i = 0; i < events_used; i++) {
 
       ev = &events[i];
-      
+
       // Decide on helper fn to call and args to pass it.
       switch (ev->ekind) {
          case Event_Ir: helperName = "track_instr";
@@ -260,7 +260,7 @@ static void flushEvents(IRSB* sb)
 
       // Add the helper.
       argv = mkIRExprVec_2( ev->addr, mkIRExpr_HWord( ev->size ) );
-      di   = unsafeIRDirty_0_N( /*regparms*/2, 
+      di   = unsafeIRDirty_0_N( /*regparms*/2,
                                 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
                                 argv );
       addStmtToIRSB( sb, IRStmt_Dirty(di) );
@@ -347,8 +347,8 @@ static void mh_post_clo_init(void)
 
 static
 IRSB* mh_instrument ( VgCallbackClosure* closure,
-                      IRSB* sbIn, 
-                      VexGuestLayout* layout, 
+                      IRSB* sbIn,
+                      VexGuestLayout* layout,
                       VexGuestExtents* vge,
 		      VexArchInfo* arch,
                       IRType gWordTy, IRType hWordTy )
@@ -379,7 +379,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
    for (/*use current i*/; i < sbIn->stmts_used; i++) {
       IRStmt* st = sbIn->stmts[i];
       if (!st || st->tag == Ist_NoOp) continue;
-      
+
       switch (st->tag) {
          case Ist_NoOp:
          case Ist_AbiHint:
