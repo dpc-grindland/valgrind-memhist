@@ -46,6 +46,7 @@
 
 #include "memhist.h"  // client requests
 
+
 /*------------------------------------------------------------*/
 /*--- Command line options                                 ---*/
 /*------------------------------------------------------------*/
@@ -103,6 +104,7 @@ typedef
       ThreadId	 tid;
       IRAtom*    addr;
       Int        size;
+      IRAtom*    data;  /* written */
    }
    Event;
 
@@ -146,6 +148,7 @@ struct mh_mem_access_t
 {
     ExeContext* call_stack;
     unsigned time_stamp;
+    HWord data;
 };
 
 struct mh_track_mem_block_t
@@ -177,7 +180,8 @@ static void track_load(Addr addr, SizeT size)
 {
 }
 
-static VG_REGPARM(2) void track_store(Addr addr, SizeT size)
+VG_REGPARM(2)
+static void track_store_hword(Addr addr, SizeT size, HWord data)
 {
     Addr start = addr;
     Addr end = addr + size;
@@ -220,6 +224,7 @@ static VG_REGPARM(2) void track_store(Addr addr, SizeT size)
 		    //VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
 		    tmb->access_matrix[i].call_stack = ec;
 		    tmb->access_matrix[i].time_stamp = mh_logical_time;
+		    tmb->access_matrix[i].data = data;
 		}
 		start = addr;
 		end = addr + size;
@@ -237,6 +242,12 @@ static VG_REGPARM(2) void track_store(Addr addr, SizeT size)
 	++mh_logical_time;
 }
 
+VG_REGPARM(3)
+static void track_store(Addr addr, SizeT size)
+{
+    track_store_hword(addr, size, 0);
+}
+
 /*static VG_REGPARM(2) void track_modify(Addr addr, SizeT size)
 {
 	//VG_(printf)(" M %08lx,%lu\n", addr, size);
@@ -249,6 +260,7 @@ static void flushEvents(IRSB* sb)
    const HChar*      helperName;
    void*      helperAddr;
    IRExpr**   argv;
+   Int argc;
    IRDirty*   di;
    Event*     ev;
 
@@ -275,10 +287,18 @@ static void flushEvents(IRSB* sb)
 	  break;
 
       case Event_Dw:
+	  if (ev->data && ev->size == sizeof(HWord)) {
+	      helperName = "track_store_hword";
+	      helperAddr =  track_store_hword;
+	      argv = mkIRExprVec_3(ev->addr, mkIRExpr_HWord(ev->size), ev->data);
+	      argc = 3;
+	  }
+	  else {
 	      helperName = "track_store";
 	      helperAddr =  track_store;
 	      argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
 	      argc = 2;
+	  }
 	  break;
 
          /*case Event_Dm: helperName = "track_modify";
@@ -338,7 +358,7 @@ void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
 }
 
 static
-void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
+void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, IRAtom* data)
 {
    //Event* lastEvt;
    Event* evt;
@@ -363,6 +383,7 @@ void addEvent_Dw ( IRSB* sb, IRAtom* daddr, Int dsize )
    //evt->tid   = tid;
    evt->size  = dsize;
    evt->addr  = daddr;
+   evt->data  = data;
    events_used++;
 }
 
@@ -445,7 +466,8 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
             if (clo_track_mem) {
                IRExpr* data  = st->Ist.Store.data;
                addEvent_Dw( sbOut, st->Ist.Store.addr,
-                            sizeofIRType(typeOfIRExpr(tyenv, data)) );
+                            sizeofIRType(typeOfIRExpr(tyenv, data)),
+			    st->Ist.Store.data);
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -462,7 +484,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                   if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                      addEvent_Dr( sbOut, d->mAddr, dsize );
                   if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize );
+                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL);
                } else {
                   tl_assert(d->mAddr == NULL);
                   tl_assert(d->mSize == 0);
@@ -489,7 +511,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                dataSize *= 2; /* since it's a doubleword-CAS */
             if (clo_track_mem) {
                addEvent_Dr( sbOut, cas->addr, dataSize );
-               addEvent_Dw( sbOut, cas->addr, dataSize );
+               addEvent_Dw( sbOut, cas->addr, dataSize, NULL);
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -506,9 +528,10 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
             } else {
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
-               if (clo_track_mem)
-                  addEvent_Dw( sbOut, st->Ist.LLSC.addr,
-                                      sizeofIRType(dataTy) );
+               if (clo_track_mem) {
+                  addEvent_Dw (sbOut, st->Ist.LLSC.addr,
+			       sizeofIRType(dataTy), st->Ist.LLSC.storedata);
+	       }
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -663,11 +686,25 @@ static void mh_fini(Int exitcode)
 		ap = &tmb->access_matrix[wix*tmb->history + hist_ix];
 		if (ap->call_stack) {
 		    if (!h) {
-			VG_(umsg) ("%u-bytes at address %p written at time %u:\n",
-				   tmb->word_sz, (void*)addr, ap->time_stamp);
+			if (tmb->word_sz == sizeof(HWord)) {
+			    VG_(umsg)("%u-bytes %p written to address %p at time %u:\n",
+				      tmb->word_sz, (void*)ap->data,
+				      (void*)addr, ap->time_stamp);
+			}
+			else {
+			    VG_(umsg)("%u-bytes at address %p written at time %u:\n",
+				      tmb->word_sz, (void*)addr, ap->time_stamp);
+			}
 		    }
 		    else {
-			VG_(umsg) ("       AND at time %u:\n", ap->time_stamp);
+			if (tmb->word_sz == sizeof(HWord)) {
+			    VG_(umsg) ("       AND %p written at time %u:\n",
+				       (void*)ap->data, ap->time_stamp);
+			}
+			else {
+			    VG_(umsg) ("       AND at time %u:\n",
+				       ap->time_stamp);
+			}
 		    }
 		    VG_(pp_ExeContext)(ap->call_stack);
 		}
