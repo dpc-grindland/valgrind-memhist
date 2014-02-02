@@ -155,7 +155,7 @@ struct mh_track_mem_block_t
     Addr end;
     const char* name;
     unsigned birth_time_stamp;
-    int      enabled;
+    Bool     enabled;
     unsigned word_sz;  /* in bytes */
     unsigned nwords;   /* #columns */
     unsigned history;  /* #rows */
@@ -167,15 +167,17 @@ static struct mh_track_mem_block_t* mh_track_list;
 
 static unsigned mh_logical_time = 0;
 
-static VG_REGPARM(2) void track_instr(Addr addr, SizeT size)
+VG_REGPARM(2)
+static void track_instr(Addr addr, SizeT size)
 {
 }
 
-static VG_REGPARM(2) void track_load(Addr addr, SizeT size)
+VG_REGPARM(2)
+static void track_load(Addr addr, SizeT size)
 {
 }
 
-static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
+static VG_REGPARM(2) void track_store(Addr addr, SizeT size)
 {
     Addr start = addr;
     Addr end = addr + size;
@@ -256,27 +258,42 @@ static void flushEvents(IRSB* sb)
 
       // Decide on helper fn to call and args to pass it.
       switch (ev->ekind) {
-         case Event_Ir: helperName = "track_instr";
-                        helperAddr =  track_instr;  break;
+      case Event_Ir:
+	  /*helperName = "track_instr";
+	  helperAddr =  track_instr;
+	  argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
+	  argc = 2;*/
+	  helperAddr = NULL;
+	  break;
 
-         case Event_Dr: helperName = "track_load";
-                        helperAddr =  track_load;   break;
+      case Event_Dr:
+	  /*helperName = "track_load";
+	  helperAddr =  track_load;
+	  argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
+	  argc = 2;*/
+	  helperAddr = NULL;
+	  break;
 
-         case Event_Dw: helperName = "track_store";
-                        helperAddr =  track_store;  break;
+      case Event_Dw:
+	      helperName = "track_store";
+	      helperAddr =  track_store;
+	      argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
+	      argc = 2;
+	  break;
 
          /*case Event_Dm: helperName = "track_modify";
                         helperAddr =  track_modify; break;*/
-         default:
-            tl_assert(0);
+      default:
+	  tl_assert(0);
       }
 
       // Add the helper.
-      argv = mkIRExprVec_2( ev->addr, mkIRExpr_HWord( ev->size ) );
-      di   = unsafeIRDirty_0_N( /*regparms*/2,
-                                helperName, VG_(fnptr_to_fnentry)( helperAddr ),
-                                argv );
-      addStmtToIRSB( sb, IRStmt_Dirty(di) );
+      if (helperAddr) {
+	  di = unsafeIRDirty_0_N(argc, /*regparms*/
+				 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
+				 argv);
+	  addStmtToIRSB( sb, IRStmt_Dirty(di) );
+      }
    }
 
    events_used = 0;
@@ -304,7 +321,7 @@ static void addEvent_Ir ( IRSB* sb, IRAtom* iaddr, UInt isize )
 }
 
 static
-void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize )
+void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
 {
    Event* evt;
    tl_assert(clo_track_mem);
@@ -538,7 +555,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Tracking %u-words from %p to %p with history %u\n",
-		  word_sz, addr, addr+size, history);
+		  word_sz, (void*)addr, (void*)(addr+size), history);
     }
 
     tmb = VG_(malloc)("track_mem_write",
@@ -547,7 +564,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     tmb->end = addr + size;
     tmb->name = name;
     tmb->birth_time_stamp = mh_logical_time++;
-    tmb->enabled = 1;
+    tmb->enabled = True;
     tmb->word_sz = word_sz;
     tmb->nwords = nwords;
     tmb->history = history;
@@ -572,7 +589,7 @@ static void untrack_mem_write (Addr addr, SizeT size)
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Untracking from %p to %p\n",
-		  tmb->start, tmb->end, tmb->history);
+		  (void*)addr, (void*)end);
     }
 
     for (tmb = *prevp; tmb; tmb = *prevp) {
@@ -580,11 +597,13 @@ static void untrack_mem_write (Addr addr, SizeT size)
 	    tl_assert(end == tmb->end);
 	    *prevp = tmb->next;
 	    VG_(free) (tmb);
+	    return;
 	}
 	else {
 	    prevp = &tmb->next;
 	}
     }
+    tl_assert(!"Could not find region to untrack");
 }
 
 
@@ -600,7 +619,7 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 
    switch (arg[0]) {
       case VG_USERREQ__TRACK_MEM_WRITE:
-	  track_mem_write (arg[1], arg[2], arg[3], arg[4], arg[5]);
+	  track_mem_write (arg[1], arg[2], arg[3], arg[4], (char*)arg[5]);
          *ret = -1;
          break;
       case VG_USERREQ__UNTRACK_MEM_WRITE:
