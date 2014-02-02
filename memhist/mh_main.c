@@ -144,11 +144,9 @@ static Int   events_used = 0;
 
 struct mh_mem_access_t
 {
-    unsigned hist_ix;  /* memory waste, should be moved to own vector */
     ExeContext* call_stack;
     unsigned time_stamp;
 };
-
 
 struct mh_track_mem_block_t
 {
@@ -156,10 +154,12 @@ struct mh_track_mem_block_t
     Addr start;
     Addr end;
     unsigned birth_time_stamp;
-    unsigned granularity;  /* in bytes */
-    unsigned vec_len; /* #columns */
-    unsigned history; /* #rows */
-    struct mh_mem_access_t access_vec[0];
+    int      enabled;
+    unsigned word_sz;  /* in bytes */
+    unsigned nwords;   /* #columns */
+    unsigned history;  /* #rows */
+    struct mh_mem_access_t* access_matrix;
+    unsigned hist_ix_vec[0];
 };
 
 static struct mh_track_mem_block_t* mh_track_list;
@@ -183,20 +183,22 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 
     for (tmb = mh_track_list; tmb; tmb = tmb->next) {
 	if (end > tmb->start && start < tmb->end) {
-	    if (tmb->vec_len) {  // enabled?
+	    if (tmb->enabled) {
 		ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
 		ExeContext *ec = VG_(record_ExeContext)(tid, 0);
-		unsigned start_ix, end_ix, ix, j;
+		unsigned wix; /* word index */
+		unsigned start_wix, end_wix;
+
 
 		if (start < tmb->start)
 		    start = tmb->start;
 		if (end > tmb->end)
 		    end = tmb->end;
 
-		start_ix = (addr - tmb->start) / tmb->granularity; 
-		end_ix = (end - tmb->start - 1) / tmb->granularity + 1;
-		tl_assert(start_ix < end_ix);
-		tl_assert(end_ix <= tmb->vec_len);
+		start_wix = (start - tmb->start) / tmb->word_sz;
+		end_wix = (end - tmb->start - 1) / tmb->word_sz + 1;
+		tl_assert(start_wix < end_wix);
+		tl_assert(end_wix <= tmb->nwords);
 
 		if (clo_trace_mem) {
 		    VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
@@ -204,18 +206,28 @@ static VG_REGPARM(2)void track_store(Addr addr, SizeT size)
 		    VG_(pp_ExeContext)(ec);
 		}
 
-		for (ix = start_ix; ix < end_ix; ix++) {
-		    j = ix + tmb->vec_len * tmb->access_vec[ix].hist_ix++;
-		    if (tmb->access_vec[ix].hist_ix >= tmb->history)
-			tmb->access_vec[ix].hist_ix = 0;
+		for (wix = start_wix; wix < end_wix; wix++) {
+		    int i;
+		    unsigned hix = tmb->hist_ix_vec[wix]++;
 
-		    tmb->access_vec[j].call_stack = ec;
-		    tmb->access_vec[j].time_stamp = mh_logical_time;
+		    if (tmb->hist_ix_vec[wix] >= tmb->history)
+			tmb->hist_ix_vec[wix] = 0;
+
+		    i = (tmb->history * wix) + hix;
+		    //VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
+		    tmb->access_matrix[i].call_stack = ec;
+		    tmb->access_matrix[i].time_stamp = mh_logical_time;
 		}
 		start = addr;
 		end = addr + size;
 		got_a_hit = 1;
 	    }
+	    else {
+		//VG_(umsg)("TRACE: Disabled???\n");
+	    }
+	}
+	else {
+	    //VG_(umsg)("TRACE: Not within\n");
 	}
     }
     if (got_a_hit)
@@ -506,23 +518,44 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
    return sbOut;
 }
 
-
-static void track_mem_write(Addr addr, SizeT size, unsigned granularity, unsigned history)
+static unsigned align_up(unsigned unit, unsigned value)
 {
-    unsigned vec_len = (size + granularity - 1) / granularity;
+    return ((value + unit - 1) / unit) * unit;
+}
+
+
+static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history)
+{
+    struct mh_track_mem_block_t *tmb;
+    const unsigned nwords = (size + word_sz - 1) / word_sz;
+    const unsigned sizeof_hist_ix_vec = nwords * sizeof(*tmb->hist_ix_vec);
     unsigned i;
-    struct mh_track_mem_block_t *tmb =
-	VG_(malloc)("track_mem_write", sizeof(*tmb) + history * vec_len * sizeof(*tmb->access_vec));
+    const unsigned matrix_offset = align_up(sizeof(void*),
+					    (sizeof(struct mh_track_mem_block_t)
+					     + sizeof_hist_ix_vec));
+
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: Tracking %u-words from %p to %p with history %u\n",
+		  word_sz, addr, addr+size, history);
+    }
+
+    tmb = VG_(malloc)("track_mem_write",
+		      matrix_offset + history * nwords * sizeof(struct mh_mem_access_t));
     tmb->start = addr;
     tmb->end = addr + size;
     tmb->birth_time_stamp = mh_logical_time++;
-    tmb->granularity = granularity;
-    tmb->vec_len = vec_len;
+    tmb->enabled = 1;
+    tmb->word_sz = word_sz;
+    tmb->nwords = nwords;
     tmb->history = history;
-    for (i = 0; i < history*vec_len; i++) {
-	tmb->access_vec[i].hist_ix = 0;  /* only first 'row' is used */
-	tmb->access_vec[i].call_stack = NULL;
-	tmb->access_vec[i].time_stamp = 0;
+    tmb->access_matrix = (struct mh_mem_access_t*) ((char*)tmb + matrix_offset);
+    tl_assert((char*)&tmb->hist_ix_vec[history] <= (char*)tmb->access_matrix);
+    for (i = 0; i < nwords; i++) {
+	tmb->hist_ix_vec[i] = 0;
+    }
+    for (i = 0; i < history*nwords; i++) {
+	tmb->access_matrix[i].call_stack = NULL;
+	tmb->access_matrix[i].time_stamp = 0;
     }
     tmb->next = mh_track_list;
     mh_track_list = tmb;
@@ -530,20 +563,25 @@ static void track_mem_write(Addr addr, SizeT size, unsigned granularity, unsigne
 
 static void untrack_mem_write (Addr addr, SizeT size)
 {
-	Addr end = addr + size;
-	struct mh_track_mem_block_t* tmb;
-	struct mh_track_mem_block_t** prevp = &mh_track_list;
+    Addr end = addr + size;
+    struct mh_track_mem_block_t* tmb;
+    struct mh_track_mem_block_t** prevp = &mh_track_list;
 
-	for (tmb = *prevp; tmb; tmb = *prevp) {
-		if (addr == tmb->start) {
-			tl_assert(end == tmb->end);
-			*prevp = tmb->next;
-			VG_(free) (tmb);
-		}
-		else {
-			prevp = &tmb->next;
-		}
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: Untracking from %p to %p\n",
+		  tmb->start, tmb->end, tmb->history);
+    }
+
+    for (tmb = *prevp; tmb; tmb = *prevp) {
+	if (addr == tmb->start) {
+	    tl_assert(end == tmb->end);
+	    *prevp = tmb->next;
+	    VG_(free) (tmb);
 	}
+	else {
+	    prevp = &tmb->next;
+	}
+    }
 }
 
 
@@ -583,15 +621,15 @@ static void mh_fini(Int exitcode)
     struct mh_track_mem_block_t* tmb;
 
     for (tmb = mh_track_list; tmb; tmb=tmb->next) {
-	unsigned ix = 0;
+	unsigned wix = 0; /* word index */
 	Addr addr = tmb->start;
-	VG_(umsg) ("Memhist tracking from %p to %p with granularity %u "
+	VG_(umsg) ("Memhist tracking from %p to %p with word size %u "
 		   "and history %u created at time %u.\n",
-		   (void*)tmb->start, (void*)tmb->end, tmb->granularity,
+		   (void*)tmb->start, (void*)tmb->end, tmb->word_sz,
 		   tmb->history, tmb->birth_time_stamp);
-	for (addr=tmb->start; addr < tmb->end; ix++, addr += tmb->granularity) {
+	for (addr=tmb->start; addr < tmb->end; wix++, addr += tmb->word_sz) {
 	    unsigned h;
-	    int hist_ix = tmb->access_vec[ix].hist_ix - 1;
+	    int hist_ix = tmb->hist_ix_vec[wix] - 1;
 
 	    for (h=0; h < tmb->history; h++, hist_ix--) {
 		struct mh_mem_access_t* ap;
@@ -599,11 +637,12 @@ static void mh_fini(Int exitcode)
 		if (hist_ix < 0)
 		    hist_ix = tmb->history - 1;
 
-		ap = &tmb->access_vec[ix + tmb->vec_len * hist_ix];
+		//VG_(umsg)("TRACE: Reading at ix=%u\n", wix*tmb->history + hist_ix);
+		ap = &tmb->access_matrix[wix*tmb->history + hist_ix];
 		if (ap->call_stack) {
 		    if (!h) {
 			VG_(umsg) ("%u-bytes at address %p written at time %u:\n",
-				   tmb->granularity, (void*)addr, ap->time_stamp);
+				   tmb->word_sz, (void*)addr, ap->time_stamp);
 		    }
 		    else {
 			VG_(umsg) ("       AND at time %u:\n", ap->time_stamp);
@@ -612,7 +651,7 @@ static void mh_fini(Int exitcode)
 		}
 		else {
 		    if (!h)
-			VG_(umsg) ("%u-bytes at %p not written.\n", tmb->granularity, (void*)addr);
+			VG_(umsg) ("%u-bytes at %p not written.\n", tmb->word_sz, (void*)addr);
 		    break;
 		}
 	    }
