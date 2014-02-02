@@ -60,3 +60,4 @@ memhist_@VGCONF_ARCH_SEC@_@VGCONF_OS@_LINK = \
 endif
 
 
+memhist_amd64_linux-mh_main.o: CFLAGS += -Werror
