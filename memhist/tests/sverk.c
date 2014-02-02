@@ -12,7 +12,7 @@ int foo()
   static int* vec[10];
   int i;
 
-  VALGRIND_TRACK_MEM_WRITE(vec, 10*sizeof(int*), sizeof(int*), 3);
+  VALGRIND_TRACK_MEM_WRITE(vec, 10*sizeof(int*), sizeof(int*), 3, "vec");
   //VALGRIND_TRACK_MEM_WRITE(vec+5, 5*sizeof(int), 1);
 
   for (i=0; i<8; i++)
@@ -33,7 +33,7 @@ int foo()
 
   for (i=0; i<10; i++)
     {
-      printf("vec[%d] = %d\n", i, *vec[i]); 
+      printf("vec[%d] = %d\n", i, *vec[i]);
     }
 
   //*(int*)0 = 17;

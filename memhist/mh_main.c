@@ -153,6 +153,7 @@ struct mh_track_mem_block_t
     struct mh_track_mem_block_t* next;
     Addr start;
     Addr end;
+    const char* name;
     unsigned birth_time_stamp;
     int      enabled;
     unsigned word_sz;  /* in bytes */
@@ -524,7 +525,8 @@ static unsigned align_up(unsigned unit, unsigned value)
 }
 
 
-static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history)
+static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history,
+			    const char* name)
 {
     struct mh_track_mem_block_t *tmb;
     const unsigned nwords = (size + word_sz - 1) / word_sz;
@@ -543,6 +545,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 		      matrix_offset + history * nwords * sizeof(struct mh_mem_access_t));
     tmb->start = addr;
     tmb->end = addr + size;
+    tmb->name = name;
     tmb->birth_time_stamp = mh_logical_time++;
     tmb->enabled = 1;
     tmb->word_sz = word_sz;
@@ -597,7 +600,7 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 
    switch (arg[0]) {
       case VG_USERREQ__TRACK_MEM_WRITE:
-	  track_mem_write (arg[1], arg[2], arg[3], arg[4]);
+	  track_mem_write (arg[1], arg[2], arg[3], arg[4], arg[5]);
          *ret = -1;
          break;
       case VG_USERREQ__UNTRACK_MEM_WRITE:
@@ -623,8 +626,8 @@ static void mh_fini(Int exitcode)
     for (tmb = mh_track_list; tmb; tmb=tmb->next) {
 	unsigned wix = 0; /* word index */
 	Addr addr = tmb->start;
-	VG_(umsg) ("Memhist tracking from %p to %p with word size %u "
-		   "and history %u created at time %u.\n",
+	VG_(umsg) ("Memhist tracking '%s' from %p to %p with word size %u "
+		   "and history %u created at time %u.\n", tmb->name,
 		   (void*)tmb->start, (void*)tmb->end, tmb->word_sz,
 		   tmb->history, tmb->birth_time_stamp);
 	for (addr=tmb->start; addr < tmb->end; wix++, addr += tmb->word_sz) {
