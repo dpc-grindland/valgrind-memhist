@@ -104,6 +104,7 @@ typedef
       ThreadId	 tid;
       IRAtom*    addr;
       Int        size;
+      HWord      ip;
    }
    Event;
 
@@ -182,7 +183,7 @@ static void track_load(Addr addr, SizeT size)
 */
 
 VG_REGPARM(2)
-static void track_store(Addr addr, SizeT size)
+static Int track_store(Addr addr, SizeT size)
 {
     Addr start = addr;
     Addr end = addr + size;
@@ -251,6 +252,7 @@ static void track_store(Addr addr, SizeT size)
     }
     if (got_a_hit)
 	++mh_logical_time;
+    return mh_logical_time > 10;   /* Just testing SEGV!!! */
 }
 
 
@@ -259,6 +261,13 @@ static void track_store(Addr addr, SizeT size)
 	//VG_(printf)(" M %08lx,%lu\n", addr, size);
 }*/
 
+#if VEX_HOST_WORDSIZE == 4
+#  define IRConst_HWord IRConst_U32
+#elif VEX_HOST_WORDSIZE == 8
+#  define IRConst_HWord IRConst_U64
+#else
+#  error "VEX_HOST_WORDSIZE not set to 4 or 8"
+#endif
 
 static void flushEvents(IRSB* sb)
 {
@@ -305,10 +314,19 @@ static void flushEvents(IRSB* sb)
 
       // Add the helper.
       if (helperAddr) {
-	  di = unsafeIRDirty_0_N(2, /*regparms*/
+	  IRTemp retval32 = newIRTemp(sb->tyenv, Ity_I32);
+	  IRTemp retval1  = newIRTemp(sb->tyenv, Ity_I1);
+	  IRExpr* jmpCond = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval32));
+	  IRConst* jmpDst = IRConst_HWord(ev->ip);
+	  Int offsIP = sb->offsIP;
+
+	  di = unsafeIRDirty_1_N(retval32,
+				 2, /*regparms*/
 				 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
 				 argv);
-	  addStmtToIRSB( sb, IRStmt_Dirty(di) );
+	  addStmtToIRSB(sb, IRStmt_Dirty(di));
+	  addStmtToIRSB(sb, IRStmt_WrTmp(retval1, jmpCond));
+	  addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(retval1) , Ijk_SigSEGV, jmpDst, offsIP));
       }
    }
 
@@ -354,7 +372,7 @@ void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
 }
 
 static
-void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize)
+void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, HWord ip)
 {
    //Event* lastEvt;
    Event* evt;
@@ -379,6 +397,7 @@ void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize)
    //evt->tid   = tid;
    evt->size  = dsize;
    evt->addr  = daddr;
+   evt->ip    = ip;
    events_used++;
 }
 
@@ -402,6 +421,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
    Int        i;
    IRSB*      sbOut;
    IRTypeEnv* tyenv = sbIn->tyenv;
+   HWord      lastIP = 0;
 
    if (gWordTy != hWordTy) {
       /* We don't currently support this case. */
@@ -442,6 +462,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                // above the function itself for more detail.
                addEvent_Ir( sbOut, mkIRExpr_HWord( (HWord)st->Ist.IMark.addr ),
                             st->Ist.IMark.len );
+	       lastIP = (HWord)st->Ist.IMark.addr;
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -461,7 +482,8 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
             if (clo_track_mem) {
                IRExpr* data  = st->Ist.Store.data;
                addEvent_Dw( sbOut, st->Ist.Store.addr,
-                            sizeofIRType(typeOfIRExpr(tyenv, data)));
+                            sizeofIRType(typeOfIRExpr(tyenv, data)),
+			    lastIP);
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -478,7 +500,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                   if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                      addEvent_Dr( sbOut, d->mAddr, dsize );
                   if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize);
+                     addEvent_Dw( sbOut, d->mAddr, dsize, lastIP);
                } else {
                   tl_assert(d->mAddr == NULL);
                   tl_assert(d->mSize == 0);
@@ -505,7 +527,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                dataSize *= 2; /* since it's a doubleword-CAS */
             if (clo_track_mem) {
                addEvent_Dr( sbOut, cas->addr, dataSize );
-               addEvent_Dw( sbOut, cas->addr, dataSize);
+               addEvent_Dw( sbOut, cas->addr, dataSize, lastIP);
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -523,7 +545,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
-                  addEvent_Dw (sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy));
+                  addEvent_Dw (sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), lastIP);
 	       }
             }
             addStmtToIRSB( sbOut, st );
