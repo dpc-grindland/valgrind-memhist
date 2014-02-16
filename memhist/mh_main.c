@@ -151,6 +151,11 @@ struct mh_mem_access_t
     HWord data;
 };
 
+enum mh_track_type {
+    MH_TRACK,
+    MH_READONLY
+};
+
 struct mh_track_mem_block_t
 {
     struct mh_track_mem_block_t* next;
@@ -159,6 +164,7 @@ struct mh_track_mem_block_t
     const char* name;
     unsigned birth_time_stamp;
     Bool     enabled;
+    enum mh_track_type type;
     unsigned word_sz;  /* in bytes */
     unsigned nwords;   /* #columns */
     unsigned history;  /* #rows */
@@ -182,64 +188,86 @@ static void track_load(Addr addr, SizeT size)
 }
 */
 
+static void report_store_in_block(struct mh_track_mem_block_t *tmb,
+				  Addr addr, SizeT size)
+{
+    ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
+    ExeContext *ec = VG_(record_ExeContext)(tid, 0);
+    unsigned wix; /* word index */
+    unsigned start_wix, end_wix;
+    Addr start = addr;
+    Addr end = addr + size;
+
+    if (start < tmb->start)
+	start = tmb->start;
+    if (end > tmb->end)
+	end = tmb->end;
+
+    start_wix = (start - tmb->start) / tmb->word_sz;
+    end_wix = (end - tmb->start - 1) / tmb->word_sz + 1;
+    tl_assert(start_wix < end_wix);
+    tl_assert(end_wix <= tmb->nwords);
+
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
+		  (unsigned)size, (void *)addr, mh_logical_time);
+	VG_(pp_ExeContext)(ec);
+    }
+
+    for (wix = start_wix; wix < end_wix; wix++) {
+	int i;
+	unsigned hix = tmb->hist_ix_vec[wix]++;
+	HWord data;
+
+	if (tmb->hist_ix_vec[wix] >= tmb->history)
+	    tmb->hist_ix_vec[wix] = 0;
+
+	i = (tmb->history * wix) + hix;
+	//VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
+	tmb->access_matrix[i].call_stack = ec;
+	tmb->access_matrix[i].time_stamp = mh_logical_time;
+	switch (size) {
+	case sizeof(HWord): data = *(HWord*)start; break;
+	case sizeof(int): data = *(int*)start; break;
+	case sizeof(short): data = *(short*)start; break;
+	case sizeof(char): data = *(char*)start; break;
+	default: data = 0xdead;
+	}
+	tmb->access_matrix[i].data = data;
+
+	start += tmb->word_sz;
+    }
+}
+
+static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
+				     Addr addr, SizeT size)
+{
+    VG_(umsg)("Provoking SEGV: %u bytes written to READONLY mem at addr %p at time %u:\n",
+	      (unsigned)size, (void *)addr, mh_logical_time);
+}
+
+
 VG_REGPARM(2)
 static Int track_store(Addr addr, SizeT size)
 {
     Addr start = addr;
     Addr end = addr + size;
     struct mh_track_mem_block_t *tmb;
-    int got_a_hit = 0;
+    Bool got_a_hit = 0;
+    Int crash_it = 0;
 
     for (tmb = mh_track_list; tmb; tmb = tmb->next) {
 	if (end > tmb->start && start < tmb->end) {
 	    if (tmb->enabled) {
-		ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
-		ExeContext *ec = VG_(record_ExeContext)(tid, 0);
-		unsigned wix; /* word index */
-		unsigned start_wix, end_wix;
-
-
-		if (start < tmb->start)
-		    start = tmb->start;
-		if (end > tmb->end)
-		    end = tmb->end;
-
-		start_wix = (start - tmb->start) / tmb->word_sz;
-		end_wix = (end - tmb->start - 1) / tmb->word_sz + 1;
-		tl_assert(start_wix < end_wix);
-		tl_assert(end_wix <= tmb->nwords);
-
-		if (clo_trace_mem) {
-		    VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
-			      (unsigned)size, (void *)addr, mh_logical_time);
-		    VG_(pp_ExeContext)(ec);
+		switch (tmb->type) {
+		case MH_TRACK:
+		    report_store_in_block(tmb, addr, size);
+		    break;
+		case MH_READONLY:
+		    report_store_in_readonly(tmb, addr, size);
+		    crash_it = 1;
+		    break;
 		}
-
-		for (wix = start_wix; wix < end_wix; wix++) {
-		    int i;
-		    unsigned hix = tmb->hist_ix_vec[wix]++;
-		    HWord data;
-
-		    if (tmb->hist_ix_vec[wix] >= tmb->history)
-			tmb->hist_ix_vec[wix] = 0;
-
-		    i = (tmb->history * wix) + hix;
-		    //VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
-		    tmb->access_matrix[i].call_stack = ec;
-		    tmb->access_matrix[i].time_stamp = mh_logical_time;
-		    switch (size) {
-		    case sizeof(HWord): data = *(HWord*)start; break;
-		    case sizeof(int): data = *(int*)start; break;
-		    case sizeof(short): data = *(short*)start; break;
-		    case sizeof(char): data = *(char*)start; break;
-		    default: data = 0xdead;
-		    }
-		    tmb->access_matrix[i].data = data;
-
-		    start += tmb->word_sz;
-		}
-		start = addr;
-		end = addr + size;
 		got_a_hit = 1;
 	    }
 	    else {
@@ -252,7 +280,7 @@ static Int track_store(Addr addr, SizeT size)
     }
     if (got_a_hit)
 	++mh_logical_time;
-    return mh_logical_time > 10;   /* Just testing SEGV!!! */
+    return crash_it;
 }
 
 
@@ -603,6 +631,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     tmb->name = name;
     tmb->birth_time_stamp = mh_logical_time++;
     tmb->enabled = True;
+    tmb->type = MH_TRACK;
     tmb->word_sz = word_sz;
     tmb->nwords = nwords;
     tmb->history = history;
@@ -619,19 +648,28 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     mh_track_list = tmb;
 }
 
-static void untrack_mem_write (Addr addr, SizeT size)
+static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type type)
 {
     Addr end = addr + size;
     struct mh_track_mem_block_t* tmb;
     struct mh_track_mem_block_t** prevp = &mh_track_list;
 
-    if (clo_trace_mem) {
-	VG_(umsg)("TRACE: Untracking from %p to %p\n",
-		  (void*)addr, (void*)end);
-    }
-
     for (tmb = *prevp; tmb; tmb = *prevp) {
-	if (addr == tmb->start) {
+	if (addr == tmb->start && type == tmb->type) {
+	    if (clo_trace_mem) {
+		switch (tmb->type) {
+		case MH_TRACK:
+		    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
+			      tmb->name, (void*)addr, (void*)(addr + size));
+		    break;
+		case MH_READONLY:
+		    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
+			      tmb->name, (void*)addr, (void*)(addr + size));
+		    break;
+		default:
+		    tl_assert2(0, "Uknown block type %u", tmb->type);
+		}
+	    }
 	    tl_assert(end == tmb->end);
 	    *prevp = tmb->next;
 	    VG_(free) (tmb);
@@ -642,6 +680,37 @@ static void untrack_mem_write (Addr addr, SizeT size)
 	}
     }
     tl_assert(!"Could not find region to untrack");
+
+}
+
+static void untrack_mem_write (Addr addr, SizeT size)
+{
+    remove_track_mem_block(addr, size, MH_TRACK);
+}
+
+static void set_mem_readonly(Addr addr, SizeT size, const char* name)
+{
+    struct mh_track_mem_block_t *tmb;
+
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: Set '%s' readonly from %p to %p\n",
+		  name, (void*)addr, (void*)(addr+size));
+    }
+
+    tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
+    tmb->start = addr;
+    tmb->end = addr + size;
+    tmb->name = name;
+    tmb->birth_time_stamp = mh_logical_time++;
+    tmb->enabled = True;
+    tmb->type = MH_READONLY;
+    tmb->next = mh_track_list;
+    mh_track_list = tmb;
+}
+
+static void set_mem_writable (Addr addr, SizeT size)
+{
+    remove_track_mem_block(addr, size, MH_READONLY);
 }
 
 
@@ -664,6 +733,16 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
          untrack_mem_write (arg[1], arg[2]);
          *ret = -1;
          break;
+
+      case VG_USERREQ__SET_READONLY:
+	 set_mem_readonly(arg[1], arg[2], (char*)arg[3]);
+	 *ret = -1;
+	 break;
+
+      case VG_USERREQ__SET_WRITABLE:
+	  set_mem_writable(arg[1], arg[2]);
+	  *ret = -1;
+	  break;
 
       default:
          VG_(message)(
@@ -699,6 +778,7 @@ static void mh_fini(Int exitcode)
     struct mh_track_mem_block_t* tmb;
 
     for (tmb = mh_track_list; tmb; tmb=tmb->next) {
+      if (tmb->type == MH_TRACK) {
 	unsigned wix = 0; /* word index */
 	Addr addr = tmb->start;
 	VG_(umsg) ("Memhist tracking '%s' from %p to %p with word size %u "
@@ -738,6 +818,12 @@ static void mh_fini(Int exitcode)
 		}
 	    }
 	}
+      }
+      else if (tmb->type == MH_READONLY) {
+	  VG_(umsg) ("Readonly region '%s' from %p to %p created at time %u.\n",
+		     tmb->name, (void*)tmb->start, (void*)tmb->end,
+		     tmb->birth_time_stamp);
+      }
     }
 }
 

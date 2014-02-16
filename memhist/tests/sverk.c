@@ -22,6 +22,8 @@ int foo()
 
   //bar(&vec[7], NULL);
 
+  VALGRIND_SET_READONLY(vec, sizeof(vec), "vec");
+
   bar(&vec[3], __LINE__);
   bar(&vec[3], __LINE__);
 
