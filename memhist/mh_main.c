@@ -352,6 +352,9 @@ static void flushEvents(IRSB* sb)
 				 2, /*regparms*/
 				 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
 				 argv);
+	  di->mFx = Ifx_Read;
+	  di->mAddr = ev->addr;
+	  di->mSize = ev->size;
 	  addStmtToIRSB(sb, IRStmt_Dirty(di));
 	  addStmtToIRSB(sb, IRStmt_WrTmp(retval1, jmpCond));
 	  addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(retval1) , Ijk_SigSEGV, jmpDst, offsIP));
