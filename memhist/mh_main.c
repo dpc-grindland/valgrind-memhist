@@ -103,6 +103,7 @@ typedef
       EventKind  ekind;
       ThreadId	 tid;
       IRAtom*    addr;
+      IRExpr*    data;
       Int        size;
       HWord      ip;
    }
@@ -189,7 +190,7 @@ static void track_load(Addr addr, SizeT size)
 */
 
 static void report_store_in_block(struct mh_track_mem_block_t *tmb,
-				  Addr addr, SizeT size)
+				  Addr addr, SizeT size, Addr64 data)
 {
     ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
     ExeContext *ec = VG_(record_ExeContext)(tid, 0);
@@ -198,8 +199,18 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
     Addr start = addr;
     Addr end = addr + size;
 
-    if (start < tmb->start)
+    if (start < tmb->start) {
+	union {
+	    Addr64 words[2];
+	    char bytes[2*8];
+	}u;
+	int offs = tmb->start - start;
+	u.words[0] = data;
+	u.words[1] = 0;
+	tl_assert(offs < 8);
+	data = *(Addr64*) &u.bytes[offs];    /* BUG: Unaligned word access */
 	start = tmb->start;
+    }
     if (end > tmb->end)
 	end = tmb->end;
 
@@ -217,7 +228,7 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
     for (wix = start_wix; wix < end_wix; wix++) {
 	int i;
 	unsigned hix = tmb->hist_ix_vec[wix]++;
-	HWord data;
+	/*HWord data;*/
 
 	if (tmb->hist_ix_vec[wix] >= tmb->history)
 	    tmb->hist_ix_vec[wix] = 0;
@@ -226,13 +237,13 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
 	//VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
 	tmb->access_matrix[i].call_stack = ec;
 	tmb->access_matrix[i].time_stamp = mh_logical_time;
-	switch (size) {
+	/*switch (size) {
 	case sizeof(HWord): data = *(HWord*)start; break;
 	case sizeof(int): data = *(int*)start; break;
 	case sizeof(short): data = *(short*)start; break;
 	case sizeof(char): data = *(char*)start; break;
 	default: data = 0xdead;
-	}
+	}*/
 	tmb->access_matrix[i].data = data;
 
 	start += tmb->word_sz;
@@ -240,7 +251,7 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
 }
 
 static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
-				     Addr addr, SizeT size)
+				     Addr addr, SizeT size, Addr64 data)
 {
     VG_(umsg)("Provoking SEGV: %u bytes written to READONLY mem at addr %p at time %u:\n",
 	      (unsigned)size, (void *)addr, mh_logical_time);
@@ -248,7 +259,7 @@ static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
 
 
 VG_REGPARM(2)
-static Int track_store(Addr addr, SizeT size)
+static Int track_store(Addr addr, SizeT size, Addr64 data)
 {
     Addr start = addr;
     Addr end = addr + size;
@@ -261,10 +272,10 @@ static Int track_store(Addr addr, SizeT size)
 	    if (tmb->enabled) {
 		switch (tmb->type) {
 		case MH_TRACK:
-		    report_store_in_block(tmb, addr, size);
+		    report_store_in_block(tmb, addr, size, data);
 		    break;
 		case MH_READONLY:
-		    report_store_in_readonly(tmb, addr, size);
+		    report_store_in_readonly(tmb, addr, size, data);
 		    crash_it = 1;
 		    break;
 		}
@@ -305,6 +316,7 @@ static void flushEvents(IRSB* sb)
    IRExpr**   argv;
    IRDirty*   di;
    Event*     ev;
+   IRExpr*    data64;
 
    for (i = 0; i < events_used; i++) {
 
@@ -331,7 +343,18 @@ static void flushEvents(IRSB* sb)
       case Event_Dw:
 	  helperName = "track_store";
 	  helperAddr =  track_store;
-	  argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
+	  data64 = NULL;
+	  if (ev->data) {
+	      switch (ev->size) {
+	      case 1: data64 = IRExpr_Unop(Iop_8Uto64, ev->data); break;
+	      case 2: data64 = IRExpr_Unop(Iop_16Uto64, ev->data); break;
+	      case 4: data64 = IRExpr_Unop(Iop_32Uto64, ev->data); break;
+	      case 8: data64 = ev->data; break;
+	      }
+	  }
+	  if (!data64) {
+	      data64 = IRExpr_Const(IRConst_U64((ULong)0xdead));
+	  }
 	  break;
 
          /*case Event_Dm: helperName = "track_modify";
@@ -342,19 +365,20 @@ static void flushEvents(IRSB* sb)
 
       // Add the helper.
       if (helperAddr) {
+	  IRTemp dataArg  = newIRTemp(sb->tyenv, Ity_I64);
 	  IRTemp retval32 = newIRTemp(sb->tyenv, Ity_I32);
 	  IRTemp retval1  = newIRTemp(sb->tyenv, Ity_I1);
 	  IRExpr* jmpCond = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval32));
 	  IRConst* jmpDst = IRConst_HWord(ev->ip);
 	  Int offsIP = sb->offsIP;
 
+	  argv = mkIRExprVec_3(ev->addr, mkIRExpr_HWord(ev->size), IRExpr_RdTmp(dataArg));
+
 	  di = unsafeIRDirty_1_N(retval32,
 				 2, /*regparms*/
 				 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
 				 argv);
-	  di->mFx = Ifx_Read;
-	  di->mAddr = ev->addr;
-	  di->mSize = ev->size;
+	  addStmtToIRSB(sb, IRStmt_WrTmp(dataArg, data64));
 	  addStmtToIRSB(sb, IRStmt_Dirty(di));
 	  addStmtToIRSB(sb, IRStmt_WrTmp(retval1, jmpCond));
 	  addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(retval1) , Ijk_SigSEGV, jmpDst, offsIP));
@@ -371,7 +395,7 @@ static void flushEvents(IRSB* sb)
 // events into modify events works correctly.
 static void addEvent_Ir ( IRSB* sb, IRAtom* iaddr, UInt isize )
 {
-   Event* evt;
+/* Event* evt;
    tl_assert(clo_track_mem);
    tl_assert( (VG_MIN_INSTR_SZB <= isize && isize <= VG_MAX_INSTR_SZB)
             || VG_CLREQ_SZB == isize );
@@ -383,12 +407,13 @@ static void addEvent_Ir ( IRSB* sb, IRAtom* iaddr, UInt isize )
    evt->addr  = iaddr;
    evt->size  = isize;
    events_used++;
+*/
 }
 
 static
 void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
 {
-   Event* evt;
+/* Event* evt;
    tl_assert(clo_track_mem);
    tl_assert(isIRAtom(daddr));
    tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
@@ -400,10 +425,11 @@ void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
    evt->addr  = daddr;
    evt->size  = dsize;
    events_used++;
+*/
 }
 
 static
-void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, HWord ip)
+void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, IRExpr* data, HWord ip)
 {
    //Event* lastEvt;
    Event* evt;
@@ -420,16 +446,16 @@ void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, HWord ip)
       return;
    }*/
 
-   if (events_used == N_EVENTS)
-      flushEvents(sb);
-   tl_assert(events_used >= 0 && events_used < N_EVENTS);
+   tl_assert(events_used == 0);
    evt = &events[events_used];
    evt->ekind = Event_Dw;
    //evt->tid   = tid;
    evt->size  = dsize;
    evt->addr  = daddr;
+   evt->data  = data;
    evt->ip    = ip;
    events_used++;
+   flushEvents(sb);
 }
 
 
@@ -514,6 +540,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                IRExpr* data  = st->Ist.Store.data;
                addEvent_Dw( sbOut, st->Ist.Store.addr,
                             sizeofIRType(typeOfIRExpr(tyenv, data)),
+			    data,
 			    lastIP);
             }
             addStmtToIRSB( sbOut, st );
@@ -531,7 +558,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                   if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                      addEvent_Dr( sbOut, d->mAddr, dsize );
                   if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize, lastIP);
+                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, lastIP);
                } else {
                   tl_assert(d->mAddr == NULL);
                   tl_assert(d->mSize == 0);
@@ -558,7 +585,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                dataSize *= 2; /* since it's a doubleword-CAS */
             if (clo_track_mem) {
                addEvent_Dr( sbOut, cas->addr, dataSize );
-               addEvent_Dw( sbOut, cas->addr, dataSize, lastIP);
+               addEvent_Dw( sbOut, cas->addr, dataSize, NULL, lastIP);
             }
             addStmtToIRSB( sbOut, st );
             break;
@@ -576,7 +603,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
-                  addEvent_Dw (sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), lastIP);
+                  addEvent_Dw (sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), NULL, lastIP);
 	       }
             }
             addStmtToIRSB( sbOut, st );
@@ -609,7 +636,6 @@ static unsigned align_up(unsigned unit, unsigned value)
 {
     return ((value + unit - 1) / unit) * unit;
 }
-
 
 static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history,
 			    const char* name)
