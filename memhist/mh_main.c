@@ -28,9 +28,7 @@
    The GNU General Public License is contained in the file COPYING.
 */
 
-// This code was forked from lackey/lk_main.c
-// A lot of code for detailed execution information gathering has been removed
-// but the central memory access tracking is left almost untouched.
+// This code was initially forked from lackey/lk_main.c
 
 #include "pub_tool_basics.h"
 #include "pub_tool_tooliface.h"
@@ -89,60 +87,6 @@ typedef enum { OpLoad=0, OpStore=1, OpAlu=2 } Op;
  */
 
 #define MAX_DSIZE    512
-
-typedef
-   IRExpr
-   IRAtom;
-
-typedef
-   enum { Event_Ir, Event_Dr, Event_Dw, Event_Dm }
-   EventKind;
-
-typedef
-   struct {
-      EventKind  ekind;
-      ThreadId	 tid;
-      IRAtom*    addr;
-      IRExpr*    data;
-      Int        size;
-      HWord      ip;
-   }
-   Event;
-
-/* Up to this many unnotified events are allowed.  Must be at least two,
-   so that reads and writes to the same address can be merged into a modify.
-   Beyond that, larger numbers just potentially induce more spilling due to
-   extending live ranges of address temporaries. */
-#define N_EVENTS 4
-
-/* Maintain an ordered list of memory events which are outstanding, in
-   the sense that no IR has yet been generated to do the relevant
-   helper calls.  The SB is scanned top to bottom and memory events
-   are added to the end of the list, merging with the most recent
-   notified event where possible (Dw immediately following Dr and
-   having the same size and EA can be merged).
-
-   This merging is done so that for architectures which have
-   load-op-store instructions (x86, amd64), the instr is treated as if
-   it makes just one memory reference (a modify), rather than two (a
-   read followed by a write at the same address).
-
-   At various points the list will need to be flushed, that is, IR
-   generated from it.  That must happen before any possible exit from
-   the block (the end, or an IRStmt_Exit).  Flushing also takes place
-   when there is no space to add a new event.
-
-   If we require the simulation statistics to be up to date with
-   respect to possible memory exceptions, then the list would have to
-   be flushed before each memory reference.  That's a pain so we don't
-   bother.
-
-   Flushing the list consists of walking it start to end and emitting
-   instrumentation IR for each event, in the order in which they
-   appear. */
-
-static Event events[N_EVENTS];
-static Int   events_used = 0;
 
 
 struct mh_mem_access_t
@@ -228,7 +172,6 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
     for (wix = start_wix; wix < end_wix; wix++) {
 	int i;
 	unsigned hix = tmb->hist_ix_vec[wix]++;
-	/*HWord data;*/
 
 	if (tmb->hist_ix_vec[wix] >= tmb->history)
 	    tmb->hist_ix_vec[wix] = 0;
@@ -237,13 +180,6 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
 	//VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
 	tmb->access_matrix[i].call_stack = ec;
 	tmb->access_matrix[i].time_stamp = mh_logical_time;
-	/*switch (size) {
-	case sizeof(HWord): data = *(HWord*)start; break;
-	case sizeof(int): data = *(int*)start; break;
-	case sizeof(short): data = *(short*)start; break;
-	case sizeof(char): data = *(char*)start; break;
-	default: data = 0xdead;
-	}*/
 	tmb->access_matrix[i].data = data;
 
 	start += tmb->word_sz;
@@ -257,8 +193,9 @@ static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
 	      (unsigned)size, (void *)addr, mh_logical_time);
 }
 
+#define track_store_REGPARM 2
 
-VG_REGPARM(2)
+VG_REGPARM(track_store_REGPARM)
 static Int track_store(Addr addr, SizeT size, Addr64 data)
 {
     Addr start = addr;
@@ -295,11 +232,6 @@ static Int track_store(Addr addr, SizeT size, Addr64 data)
 }
 
 
-/*static VG_REGPARM(2) void track_modify(Addr addr, SizeT size)
-{
-	//VG_(printf)(" M %08lx,%lu\n", addr, size);
-}*/
-
 #if VEX_HOST_WORDSIZE == 4
 #  define IRConst_HWord IRConst_U32
 #elif VEX_HOST_WORDSIZE == 8
@@ -308,154 +240,62 @@ static Int track_store(Addr addr, SizeT size, Addr64 data)
 #  error "VEX_HOST_WORDSIZE not set to 4 or 8"
 #endif
 
-static void flushEvents(IRSB* sb)
+
+static void addEvent_Ir(IRSB* sb, IRExpr* iaddr, UInt isize)
 {
-   Int        i;
-   const HChar*      helperName;
-   void*      helperAddr;
-   IRExpr**   argv;
-   IRDirty*   di;
-   Event*     ev;
-   IRExpr*    data64;
-
-   for (i = 0; i < events_used; i++) {
-
-      ev = &events[i];
-
-      // Decide on helper fn to call and args to pass it.
-      switch (ev->ekind) {
-      case Event_Ir:
-	  /*helperName = "track_instr";
-	  helperAddr =  track_instr;
-	  argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
-	  argc = 2;*/
-	  helperAddr = NULL;
-	  break;
-
-      case Event_Dr:
-	  /*helperName = "track_load";
-	  helperAddr =  track_load;
-	  argv = mkIRExprVec_2(ev->addr, mkIRExpr_HWord(ev->size));
-	  argc = 2;*/
-	  helperAddr = NULL;
-	  break;
-
-      case Event_Dw:
-	  helperName = "track_store";
-	  helperAddr =  track_store;
-	  data64 = NULL;
-	  if (ev->data) {
-	      switch (ev->size) {
-	      case 1: data64 = IRExpr_Unop(Iop_8Uto64, ev->data); break;
-	      case 2: data64 = IRExpr_Unop(Iop_16Uto64, ev->data); break;
-	      case 4: data64 = IRExpr_Unop(Iop_32Uto64, ev->data); break;
-	      case 8: data64 = ev->data; break;
-	      }
-	  }
-	  if (!data64) {
-	      data64 = IRExpr_Const(IRConst_U64((ULong)0xdead));
-	  }
-	  break;
-
-         /*case Event_Dm: helperName = "track_modify";
-                        helperAddr =  track_modify; break;*/
-      default:
-	  tl_assert(0);
-      }
-
-      // Add the helper.
-      if (helperAddr) {
-	  IRTemp dataArg  = newIRTemp(sb->tyenv, Ity_I64);
-	  IRTemp retval32 = newIRTemp(sb->tyenv, Ity_I32);
-	  IRTemp retval1  = newIRTemp(sb->tyenv, Ity_I1);
-	  IRExpr* jmpCond = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval32));
-	  IRConst* jmpDst = IRConst_HWord(ev->ip);
-	  Int offsIP = sb->offsIP;
-
-	  argv = mkIRExprVec_3(ev->addr, mkIRExpr_HWord(ev->size), IRExpr_RdTmp(dataArg));
-
-	  di = unsafeIRDirty_1_N(retval32,
-				 2, /*regparms*/
-				 helperName, VG_(fnptr_to_fnentry)( helperAddr ),
-				 argv);
-	  addStmtToIRSB(sb, IRStmt_WrTmp(dataArg, data64));
-	  addStmtToIRSB(sb, IRStmt_Dirty(di));
-	  addStmtToIRSB(sb, IRStmt_WrTmp(retval1, jmpCond));
-	  addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(retval1) , Ijk_SigSEGV, jmpDst, offsIP));
-      }
-   }
-
-   events_used = 0;
 }
 
-// WARNING:  If you aren't interested in instruction reads, you can omit the
-// code that adds calls to track_instr() in flushEvents().  However, you
-// must still call this function, addEvent_Ir() -- it is necessary to add
-// the Ir events to the events list so that merging of paired load/store
-// events into modify events works correctly.
-static void addEvent_Ir ( IRSB* sb, IRAtom* iaddr, UInt isize )
+static void addEvent_Dr(IRSB* sb, IRExpr* daddr, Int dsize)
 {
-/* Event* evt;
-   tl_assert(clo_track_mem);
-   tl_assert( (VG_MIN_INSTR_SZB <= isize && isize <= VG_MAX_INSTR_SZB)
-            || VG_CLREQ_SZB == isize );
-   if (events_used == N_EVENTS)
-      flushEvents(sb);
-   tl_assert(events_used >= 0 && events_used < N_EVENTS);
-   evt = &events[events_used];
-   evt->ekind = Event_Ir;
-   evt->addr  = iaddr;
-   evt->size  = isize;
-   events_used++;
-*/
 }
 
 static
-void addEvent_Dr ( IRSB* sb, IRAtom* daddr, Int dsize)
+void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize, IRExpr* data, HWord ip)
 {
-/* Event* evt;
-   tl_assert(clo_track_mem);
-   tl_assert(isIRAtom(daddr));
-   tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
-   if (events_used == N_EVENTS)
-      flushEvents(sb);
-   tl_assert(events_used >= 0 && events_used < N_EVENTS);
-   evt = &events[events_used];
-   evt->ekind = Event_Dr;
-   evt->addr  = daddr;
-   evt->size  = dsize;
-   events_used++;
-*/
-}
+    IRTemp data_tmp, retval_tmp, cond_tmp;
+    IRExpr* cond_ex;
+    IRExpr**   argv;
+    IRDirty*   di;
+    IRExpr*    data64 = NULL;
 
-static
-void addEvent_Dw (IRSB* sb, IRAtom* daddr, Int dsize, IRExpr* data, HWord ip)
-{
-   //Event* lastEvt;
-   Event* evt;
-   tl_assert(clo_track_mem);
-   tl_assert(isIRAtom(daddr));
-   tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
+    tl_assert(clo_track_mem);
+    tl_assert(isIRAtom(daddr));
+    tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
 
-   // Is it possible to merge this write with the preceding read?
-   /*lastEvt = &events[events_used-1];
-   if (events_used > 0 && lastEvt->ekind == Event_Dr
-	   && lastEvt->size  == dsize && eqIRAtom(lastEvt->addr, daddr))
-   {
-      lastEvt->ekind = Event_Dm;
-      return;
-   }*/
+    /*  Emit:
+     *
+     *  if (track_store(daddr, dsize, data))
+     *      exit(SEGV);
+     */
 
-   tl_assert(events_used == 0);
-   evt = &events[events_used];
-   evt->ekind = Event_Dw;
-   //evt->tid   = tid;
-   evt->size  = dsize;
-   evt->addr  = daddr;
-   evt->data  = data;
-   evt->ip    = ip;
-   events_used++;
-   flushEvents(sb);
+    if (data) {
+	switch (dsize) {
+	case 1: data64 = IRExpr_Unop(Iop_8Uto64, data); break;
+	case 2: data64 = IRExpr_Unop(Iop_16Uto64, data); break;
+	case 4: data64 = IRExpr_Unop(Iop_32Uto64, data); break;
+	case 8: data64 = data; break;
+	}
+    }
+    if (!data64) {
+	data64 = IRExpr_Const(IRConst_U64((ULong)0xdead));
+    }
+
+    data_tmp = newIRTemp(sb->tyenv, Ity_I64);
+    argv = mkIRExprVec_3(daddr, mkIRExpr_HWord(dsize), IRExpr_RdTmp(data_tmp));
+
+    retval_tmp = newIRTemp(sb->tyenv, Ity_I32);
+    di = unsafeIRDirty_1_N(retval_tmp,
+			   track_store_REGPARM,
+			   "track_store",
+			   VG_(fnptr_to_fnentry)(track_store),
+			   argv);
+    addStmtToIRSB(sb, IRStmt_WrTmp(data_tmp, data64));
+    addStmtToIRSB(sb, IRStmt_Dirty(di));
+    cond_ex = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval_tmp));
+    cond_tmp = newIRTemp(sb->tyenv, Ity_I1);
+    addStmtToIRSB(sb, IRStmt_WrTmp(cond_tmp, cond_ex));
+    addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(cond_tmp), Ijk_SigSEGV,
+				  IRConst_HWord(ip), sb->offsIP));
 }
 
 
@@ -478,7 +318,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
    Int        i;
    IRSB*      sbOut;
    IRTypeEnv* tyenv = sbIn->tyenv;
-   HWord      lastIP = 0;
+   HWord      currIP = 0;
 
    if (gWordTy != hWordTy) {
       /* We don't currently support this case. */
@@ -495,10 +335,6 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
       i++;
    }
 
-   if (clo_track_mem) {
-      events_used = 0;
-   }
-
    for (/*use current i*/; i < sbIn->stmts_used; i++) {
       IRStmt* st = sbIn->stmts[i];
       if (!st || st->tag == Ist_NoOp) continue;
@@ -509,30 +345,25 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
          case Ist_Put:
          case Ist_PutI:
          case Ist_MBE:
-            addStmtToIRSB( sbOut, st );
             break;
 
          case Ist_IMark:
             if (clo_track_mem) {
-               // WARNING: do not remove this function call, even if you
-               // aren't interested in instruction reads.  See the comment
-               // above the function itself for more detail.
-               addEvent_Ir( sbOut, mkIRExpr_HWord( (HWord)st->Ist.IMark.addr ),
-                            st->Ist.IMark.len );
-	       lastIP = (HWord)st->Ist.IMark.addr;
+		addEvent_Ir(sbOut, mkIRExpr_HWord((HWord)st->Ist.IMark.addr),
+			    st->Ist.IMark.len);
             }
-            addStmtToIRSB( sbOut, st );
+	    /* Remember pointer to current hw instruction */
+	    currIP = (HWord)st->Ist.IMark.addr;
             break;
 
          case Ist_WrTmp:
             if (clo_track_mem) {
                IRExpr* data = st->Ist.WrTmp.data;
                if (data->tag == Iex_Load) {
-                  addEvent_Dr( sbOut, data->Iex.Load.addr,
-                               sizeofIRType(data->Iex.Load.ty) );
+                  addEvent_Dr(sbOut, data->Iex.Load.addr,
+			      sizeofIRType(data->Iex.Load.ty) );
                }
             }
-            addStmtToIRSB( sbOut, st );
             break;
 
          case Ist_Store:
@@ -541,10 +372,17 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                addEvent_Dw( sbOut, st->Ist.Store.addr,
                             sizeofIRType(typeOfIRExpr(tyenv, data)),
 			    data,
-			    lastIP);
+			    currIP);
             }
-            addStmtToIRSB( sbOut, st );
             break;
+
+        case Ist_StoreG:
+	    tl_assert(!"Tell Sverker he forgot to implement Ist_StoreGTo.");
+	    break;
+
+        case Ist_LoadG:
+	    tl_assert(!"Tell Sverker he forgot to implement Ist_LoadG.");
+	    break;
 
          case Ist_Dirty: {
             if (clo_track_mem) {
@@ -558,13 +396,12 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                   if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                      addEvent_Dr( sbOut, d->mAddr, dsize );
                   if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, lastIP);
+                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, currIP);
                } else {
                   tl_assert(d->mAddr == NULL);
                   tl_assert(d->mSize == 0);
                }
             }
-            addStmtToIRSB( sbOut, st );
             break;
          }
 
@@ -584,10 +421,9 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
             if (cas->dataHi != NULL)
                dataSize *= 2; /* since it's a doubleword-CAS */
             if (clo_track_mem) {
-               addEvent_Dr( sbOut, cas->addr, dataSize );
-               addEvent_Dw( sbOut, cas->addr, dataSize, NULL, lastIP);
+               addEvent_Dr(sbOut, cas->addr, dataSize);
+               addEvent_Dw(sbOut, cas->addr, dataSize, NULL, currIP);
             }
-            addStmtToIRSB( sbOut, st );
             break;
          }
 
@@ -603,30 +439,19 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
-                  addEvent_Dw (sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), NULL, lastIP);
+                  addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), NULL, currIP);
 	       }
             }
-            addStmtToIRSB( sbOut, st );
             break;
          }
 
          case Ist_Exit:
-            if (clo_track_mem) {
-               flushEvents(sbOut);
-            }
-
-            addStmtToIRSB( sbOut, st );      // Original statement
-
             break;
 
          default:
             tl_assert(0);
       }
-   }
-
-   if (clo_track_mem) {
-      /* At the end of the sbIn.  Flush outstandings. */
-      flushEvents(sbOut);
+      addStmtToIRSB(sbOut, st);      // Original statement
    }
 
    return sbOut;
