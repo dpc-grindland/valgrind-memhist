@@ -411,20 +411,30 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                was introduced, since prior to that point, the Vex
                front ends would translate a lock-prefixed instruction
                into a (normal) read followed by a (normal) write. */
-            Int    dataSize;
-            IRType dataTy;
-            IRCAS* cas = st->Ist.CAS.details;
-            tl_assert(cas->addr != NULL);
-            tl_assert(cas->dataLo != NULL);
-            dataTy   = typeOfIRExpr(tyenv, cas->dataLo);
-            dataSize = sizeofIRType(dataTy);
-            if (cas->dataHi != NULL)
-               dataSize *= 2; /* since it's a doubleword-CAS */
-            if (clo_track_mem) {
-               addEvent_Dr(sbOut, cas->addr, dataSize);
-               addEvent_Dw(sbOut, cas->addr, dataSize, NULL, currIP);
-            }
-            break;
+	    if (clo_track_mem) {
+		Int    dataSize;
+		IRCAS*  cas = st->Ist.CAS.details;
+		IRExpr* data = cas->dataLo;
+		tl_assert(cas->addr != NULL);
+		tl_assert(cas->dataLo != NULL);
+		dataSize = sizeofIRType(typeOfIRExpr(tyenv, cas->dataLo));
+		if (cas->dataHi != NULL) {  /* a doubleword-CAS */
+		    IROp mergeOp;
+		    dataSize *= 2;
+		    switch (dataSize) {
+		    case  2: mergeOp = Iop_8HLto16;   break;
+		    case  4: mergeOp = Iop_16HLto32;  break;
+		    case  8: mergeOp = Iop_32HLto64;  break;
+		    case 16: mergeOp = Iop_64HLto128; break;
+		    default: mergeOp = Iop_INVALID;   break;
+		    }
+		    data = (mergeOp == Iop_INVALID) ? NULL :
+			IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
+		}
+		addEvent_Dr(sbOut, cas->addr, dataSize);
+		addEvent_Dw(sbOut, cas->addr, dataSize, data, currIP);
+	    }
+	    break;
          }
 
          case Ist_LLSC: {
@@ -439,7 +449,8 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
-                  addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy), NULL, currIP);
+                  addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
+			      st->Ist.LLSC.storedata, currIP);
 	       }
             }
             break;
