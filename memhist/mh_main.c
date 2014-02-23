@@ -501,7 +501,7 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     tmb->nwords = nwords;
     tmb->history = history;
     tmb->access_matrix = (struct mh_mem_access_t*) ((char*)tmb + matrix_offset);
-    tl_assert((char*)&tmb->hist_ix_vec[history] <= (char*)tmb->access_matrix);
+    tl_assert((char*)&tmb->hist_ix_vec[nwords] <= (char*)tmb->access_matrix);
     for (i = 0; i < nwords; i++) {
 	tmb->hist_ix_vec[i] = 0;
     }
