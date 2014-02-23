@@ -45,6 +45,15 @@
 #include "memhist.h"  // client requests
 
 
+#define MH_DEBUG
+
+#ifdef MH_DEBUG
+#  define MH_ASSERT tl_assert
+#else
+#  define MH_ASSERT(C)
+#endif
+
+
 /*------------------------------------------------------------*/
 /*--- Command line options                                 ---*/
 /*------------------------------------------------------------*/
@@ -75,6 +84,11 @@ static void mh_print_debug_usage(void)
    VG_(printf)("    (none)\n");
 }
 
+
+static Bool fit_in_ubytes(ULong v, Int nbytes)
+{
+    return (v >> (nbytes*8)) == 0;
+}
 
 /* --- Operations --- */
 
@@ -196,7 +210,7 @@ static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
 #define track_store_REGPARM 2
 
 VG_REGPARM(track_store_REGPARM)
-static Int track_store(Addr addr, SizeT size, Addr64 data)
+static Int track_store(Addr addr, SizeT size, Long data)
 {
     Addr start = addr;
     Addr end = addr + size;
@@ -231,6 +245,23 @@ static Int track_store(Addr addr, SizeT size, Addr64 data)
     return crash_it;
 }
 
+VG_REGPARM(track_store_REGPARM)
+static Int track_cas(Addr addr, SizeT size, Long expected, Long data)
+{
+    Long actual;
+    MH_ASSERT(fit_in_ubytes(expected, size));
+    MH_ASSERT(fit_in_ubytes(data, size));
+    switch (size) {
+    case 1: actual = *(Char*)addr;  break;
+    case 2: actual = *(Short*)addr; break;
+    case 4: actual = *(Int*)addr;   break;
+    case 8: actual = *(Long*)addr;  break;
+    default:
+	tl_assert2(0,"CAS on %u-words not implemented",size);
+    }
+    return (actual == expected) ? track_store(addr, size, data) : 0;
+}
+
 
 #if VEX_HOST_WORDSIZE == 4
 #  define IRConst_HWord IRConst_U32
@@ -249,47 +280,102 @@ static void addEvent_Dr(IRSB* sb, IRExpr* daddr, Int dsize)
 {
 }
 
-static
-void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize, IRExpr* data, HWord ip)
+static IRType size2itype(int size)
 {
-    IRTemp data_tmp, retval_tmp, cond_tmp;
+    IRType type;
+    switch (size) {
+    case 1:  type = Ity_I8;   break;
+    case 2:  type = Ity_I16;  break;
+    case 4:  type = Ity_I32;  break;
+    case 8:  type = Ity_I64;  break;
+    case 16: type = Ity_I128; break;
+    default:
+	tl_assert2(0,"Invalid integer size %u", size);
+    }
+    return type;
+}
+
+
+static IRExpr* expr2atom(IRSB* sb, IRExpr* e)
+{
+    if (!isIRAtom(e)) {
+	Int size = sizeofIRType(typeOfIRExpr(sb->tyenv, e));
+	IRTemp tmp = newIRTemp(sb->tyenv, size2itype(size));
+	addStmtToIRSB(sb, IRStmt_WrTmp(tmp, e));
+	e = IRExpr_RdTmp(tmp);
+    }
+    return e;
+}
+
+static IRExpr*
+widen_to_U64(IRSB* sb, IRExpr* iexpr)
+{
+    Int size = sizeofIRType(typeOfIRExpr(sb->tyenv, iexpr));
+    switch (size) {
+    case 1: return IRExpr_Unop(Iop_8Uto64, iexpr);
+    case 2: return IRExpr_Unop(Iop_16Uto64, iexpr);
+    case 4: return IRExpr_Unop(Iop_32Uto64, iexpr);
+    case 8: return iexpr;
+    }
+    return NULL;
+}
+
+
+static
+void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize,
+		  IRExpr* expected, /* if CAS */
+		  IRExpr* data, HWord ip)
+{
+    IRTemp retval_tmp, cond_tmp;
     IRExpr* cond_ex;
     IRExpr**   argv;
     IRDirty*   di;
     IRExpr*    data64 = NULL;
+    IRExpr*    expd64;
+    void* fn;
+    const char* fn_name;
 
     tl_assert(clo_track_mem);
     tl_assert(isIRAtom(daddr));
     tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
 
-    /*  Emit:
-     *
-     *  if (track_store(daddr, dsize, data))
-     *      exit(SEGV);
-     */
-
     if (data) {
-	switch (dsize) {
-	case 1: data64 = IRExpr_Unop(Iop_8Uto64, data); break;
-	case 2: data64 = IRExpr_Unop(Iop_16Uto64, data); break;
-	case 4: data64 = IRExpr_Unop(Iop_32Uto64, data); break;
-	case 8: data64 = data; break;
-	}
+	data64 = widen_to_U64(sb, data);
     }
     if (!data64) {
 	data64 = IRExpr_Const(IRConst_U64((ULong)0xdead));
     }
 
-    data_tmp = newIRTemp(sb->tyenv, Ity_I64);
-    argv = mkIRExprVec_3(daddr, mkIRExpr_HWord(dsize), IRExpr_RdTmp(data_tmp));
+    if (expected) {
+	/*  Emit:
+         *
+         *  if (track_cas(daddr, dsize, expd, data))
+         *      exit(SEGV);
+         */
+	fn = track_cas;
+	fn_name = "track_cas";
+	expd64 = widen_to_U64(sb, expected);
+	tl_assert(expd64 != NULL);
+	argv = mkIRExprVec_4(daddr, mkIRExpr_HWord(dsize),
+			     expr2atom(sb, expd64), expr2atom(sb, data64));
+    }
+    else {
+	/*  Emit:
+         *
+         *  if (track_store(daddr, dsize, data))
+         *      exit(SEGV);
+         */
+	fn = track_store;
+	fn_name = "track_store";
+	argv = mkIRExprVec_3(daddr, mkIRExpr_HWord(dsize), expr2atom(sb, data64));
+    }
 
     retval_tmp = newIRTemp(sb->tyenv, Ity_I32);
     di = unsafeIRDirty_1_N(retval_tmp,
 			   track_store_REGPARM,
-			   "track_store",
-			   VG_(fnptr_to_fnentry)(track_store),
+			   fn_name,
+			   VG_(fnptr_to_fnentry)(fn),
 			   argv);
-    addStmtToIRSB(sb, IRStmt_WrTmp(data_tmp, data64));
     addStmtToIRSB(sb, IRStmt_Dirty(di));
     cond_ex = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval_tmp));
     cond_tmp = newIRTemp(sb->tyenv, Ity_I1);
@@ -371,6 +457,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                IRExpr* data  = st->Ist.Store.data;
                addEvent_Dw( sbOut, st->Ist.Store.addr,
                             sizeofIRType(typeOfIRExpr(tyenv, data)),
+			    NULL,
 			    data,
 			    currIP);
             }
@@ -396,7 +483,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                   if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
                      addEvent_Dr( sbOut, d->mAddr, dsize );
                   if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, currIP);
+                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, NULL, currIP);
                } else {
                   tl_assert(d->mAddr == NULL);
                   tl_assert(d->mSize == 0);
@@ -415,9 +502,11 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
 		Int    dataSize;
 		IRCAS*  cas = st->Ist.CAS.details;
 		IRExpr* data = cas->dataLo;
+		IRExpr* expd = cas->expdLo;
 		tl_assert(cas->addr != NULL);
 		tl_assert(cas->dataLo != NULL);
 		dataSize = sizeofIRType(typeOfIRExpr(tyenv, cas->dataLo));
+		tl_assert(dataSize == sizeofIRType(typeOfIRExpr(tyenv, cas->expdLo)));
 		if (cas->dataHi != NULL) {  /* a doubleword-CAS */
 		    IROp mergeOp;
 		    dataSize *= 2;
@@ -425,14 +514,14 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
 		    case  2: mergeOp = Iop_8HLto16;   break;
 		    case  4: mergeOp = Iop_16HLto32;  break;
 		    case  8: mergeOp = Iop_32HLto64;  break;
-		    case 16: mergeOp = Iop_64HLto128; break;
-		    default: mergeOp = Iop_INVALID;   break;
+		    default:
+			tl_assert2(0,"doubleword CAS instruction with size %u not implemented", dataSize);
 		    }
-		    data = (mergeOp == Iop_INVALID) ? NULL :
-			IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
+		    data = IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
+		    expd = IRExpr_Binop(mergeOp, cas->expdHi, cas->expdLo);
 		}
 		addEvent_Dr(sbOut, cas->addr, dataSize);
-		addEvent_Dw(sbOut, cas->addr, dataSize, data, currIP);
+		addEvent_Dw(sbOut, cas->addr, dataSize, expd, data, currIP);
 	    }
 	    break;
          }
@@ -450,7 +539,7 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
                   addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
-			      st->Ist.LLSC.storedata, currIP);
+			      NULL, st->Ist.LLSC.storedata, currIP);
 	       }
             }
             break;
@@ -627,11 +716,11 @@ static void print_word(unsigned word_sz, struct mh_mem_access_t* ap)
     case sizeof(HWord):
 	VG_(umsg)("%p", (void*)ap->data); break;
     case sizeof(int):
-	VG_(umsg)("%x", (int)ap->data); break;
+	VG_(umsg)("%#x", (int)ap->data); break;
     case sizeof(short):
-	VG_(umsg)("%x", (int)(short)ap->data); break;
+	VG_(umsg)("%#x", (int)(short)ap->data); break;
     case sizeof(char):
-	VG_(umsg)("%x", (int)(char)ap->data); break;
+	VG_(umsg)("%#x", (int)(char)ap->data); break;
     default:
 	VG_(umsg)("(?)"); break;
     }
