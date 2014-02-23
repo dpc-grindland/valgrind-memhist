@@ -16,6 +16,8 @@ typedef
    enum {
       VG_USERREQ__TRACK_MEM_WRITE = VG_USERREQ_TOOL_BASE('M','H'),
       VG_USERREQ__UNTRACK_MEM_WRITE,
+      VG_USERREQ__TRACK_ENABLE,
+      VG_USERREQ__TRACK_DISABLE,
       VG_USERREQ__SET_READONLY,
       VG_USERREQ__SET_WRITABLE
 
@@ -29,6 +31,16 @@ typedef
 #define VALGRIND_UNTRACK_MEM_WRITE(_qzz_addr,_qzz_len)            \
     VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
                             VG_USERREQ__UNTRACK_MEM_WRITE,        \
+                            (_qzz_addr), (_qzz_len), 0, 0, 0)
+
+#define VALGRIND_TRACK_ENABLE(_qzz_addr,_qzz_len)            \
+    VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
+                            VG_USERREQ__TRACK_ENABLE,        \
+                            (_qzz_addr), (_qzz_len), 0, 0, 0)
+
+#define VALGRIND_TRACK_DISABLE(_qzz_addr,_qzz_len)            \
+    VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
+                            VG_USERREQ__TRACK_DISABLE,        \
                             (_qzz_addr), (_qzz_len), 0, 0, 0)
 
 #define VALGRIND_SET_READONLY(_qzz_addr,_qzz_len, _qzz_name)	\

@@ -642,6 +642,26 @@ static void untrack_mem_write (Addr addr, SizeT size)
     remove_track_mem_block(addr, size, MH_TRACK);
 }
 
+static void track_able(Addr addr, SizeT size, Bool enabled)
+{
+    Addr end = addr + size;
+    struct mh_track_mem_block_t* tmb;
+
+    for (tmb = mh_track_list; tmb; tmb = tmb->next) {
+	if (addr == tmb->start && end == tmb->end) {
+	    if (clo_trace_mem) {
+		VG_(umsg)("TRACE: %sable '%s' from %p to %p\n",
+			  (enabled ? "En" : "Dis"),
+			  tmb->name, (void*)addr, (void*)(addr + size));
+	    }
+	    tmb->enabled = enabled;
+	    return;
+	}
+    }
+    tl_assert2(0, "Could not find region to %sable", enabled ? "en":"dis");
+}
+
+
 static void set_mem_readonly(Addr addr, SizeT size, const char* name)
 {
     struct mh_track_mem_block_t *tmb;
@@ -687,6 +707,16 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
          untrack_mem_write (arg[1], arg[2]);
          *ret = -1;
          break;
+
+      case VG_USERREQ__TRACK_ENABLE:
+	  track_able (arg[1], arg[2], 1);
+	  *ret = -1;
+	  break;
+
+      case VG_USERREQ__TRACK_DISABLE:
+	  track_able (arg[1], arg[2], 0);
+	  *ret = -1;
+	  break;
 
       case VG_USERREQ__SET_READONLY:
 	 set_mem_readonly(arg[1], arg[2], (char*)arg[3]);

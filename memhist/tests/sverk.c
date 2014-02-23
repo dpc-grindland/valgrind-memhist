@@ -40,6 +40,8 @@ void test_cas(void)
     ASSERT(was == 18);
     ASSERT(value == 18);
 
+    VALGRIND_TRACK_DISABLE(&value, sizeof(value));
+
 }
 
 
