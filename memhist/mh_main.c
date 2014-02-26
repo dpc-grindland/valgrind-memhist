@@ -90,11 +90,7 @@ static Bool fit_in_ubytes(ULong v, Int nbytes)
     return (v >> (nbytes*8)) == 0;
 }
 
-/* --- Operations --- */
 
-typedef enum { OpLoad=0, OpStore=1, OpAlu=2 } Op;
-
-#define N_OPS 3
 
 /*
  * Memory access tracking
@@ -111,17 +107,18 @@ struct mh_mem_access_t
 };
 
 enum mh_track_type {
-    MH_TRACK,
-    MH_READONLY
+    MH_TRACK    = 1,
+    MH_READONLY = 2
 };
 
 struct mh_track_mem_block_t
 {
-    struct mh_track_mem_block_t* next;
+    struct mh_track_mem_block_t *next, *prev;
     Addr start;
     Addr end;
     const char* name;
     unsigned birth_time_stamp;
+    unsigned readonly_time_stamp;
     Bool     enabled;
     enum mh_track_type type;
     unsigned word_sz;  /* in bytes */
@@ -131,7 +128,82 @@ struct mh_track_mem_block_t
     unsigned hist_ix_vec[0];
 };
 
-static struct mh_track_mem_block_t* mh_track_list;
+static int region_cmp_key(struct mh_track_mem_block_t* a, Addr b_start)
+{
+    return a->start < b_start ? -1 : (a->start == b_start ? 0 : 1);
+}
+
+static int region_cmp(struct mh_track_mem_block_t* a,
+		      struct mh_track_mem_block_t* b)
+{
+    return region_cmp_key(a, b->start);
+}
+
+static struct mh_track_mem_block_t region_anchor;
+
+static
+struct mh_track_mem_block_t* region_insert(struct mh_track_mem_block_t* tmb)
+{
+    struct mh_track_mem_block_t* p;
+
+    for (p=region_anchor.next; p != &region_anchor; p=p->next) {
+	int c = region_cmp(p, tmb);
+	if (c >= 0) {
+	    if (c == 0)
+		return p;
+	    break;
+	}
+    }
+    tmb->next = p;
+    tmb->prev = p->prev;
+    p->prev->next = tmb;
+    p->prev = tmb;
+    return NULL;
+}
+
+static void region_remove(struct mh_track_mem_block_t* tmb)
+{
+    tmb->next->prev = tmb->prev;
+    tmb->prev->next = tmb->next;
+}
+
+static
+struct mh_track_mem_block_t* region_min(void)
+{
+    return region_anchor.next == &region_anchor ? NULL : region_anchor.next;
+}
+
+static
+struct mh_track_mem_block_t* region_succ(struct mh_track_mem_block_t* tmb)
+{
+    return tmb->next == &region_anchor ? NULL : tmb->next;
+}
+
+static
+struct mh_track_mem_block_t* region_pred(struct mh_track_mem_block_t* tmb)
+{
+    return tmb->prev == &region_anchor ? NULL : tmb->prev;
+}
+
+static
+struct mh_track_mem_block_t* region_lookup_maxle(Addr addr)
+{
+    struct mh_track_mem_block_t *p;
+
+    for (p=region_anchor.next; p != &region_anchor; p=p->next) {
+	if (region_cmp_key(p, addr) > 0)
+	    break;
+    }
+    return region_pred(p);
+}
+
+static void insert_nonoverlapping(struct mh_track_mem_block_t* tmb)
+{
+    struct mh_track_mem_block_t* clash = region_insert(tmb);
+    tl_assert(!clash);
+    tl_assert(!(clash=region_pred(tmb)) || clash->end <= tmb->start);
+    tl_assert(!(clash=region_succ(tmb)) || clash->start >= tmb->end);
+}
 
 static unsigned mh_logical_time = 0;
 
@@ -214,32 +286,36 @@ static Int track_store(Addr addr, SizeT size, Long data)
 {
     Addr start = addr;
     Addr end = addr + size;
-    struct mh_track_mem_block_t *tmb;
+    struct mh_track_mem_block_t *tmb = region_lookup_maxle(addr);
     Bool got_a_hit = 0;
     Int crash_it = 0;
 
-    for (tmb = mh_track_list; tmb; tmb = tmb->next) {
-	if (end > tmb->start && start < tmb->end) {
-	    if (tmb->enabled) {
-		switch (tmb->type) {
-		case MH_TRACK:
-		    report_store_in_block(tmb, addr, size, data);
-		    break;
-		case MH_READONLY:
-		    report_store_in_readonly(tmb, addr, size, data);
-		    crash_it = 1;
-		    break;
-		}
-		got_a_hit = 1;
+    if (!tmb || start >= tmb->end)
+	return 0;
+
+    do {
+	tl_assert(end > tmb->start && start < tmb->end);
+
+	if (tmb->enabled) {
+	    if (tmb->type & MH_READONLY) {
+		report_store_in_readonly(tmb, addr, size, data);
+		crash_it = 1;
+		break;
 	    }
-	    else {
-		//VG_(umsg)("TRACE: Disabled???\n");
+	    if (tmb->type & MH_TRACK) {
+		report_store_in_block(tmb, addr, size, data);
 	    }
+	    got_a_hit = 1;
 	}
 	else {
-	    //VG_(umsg)("TRACE: Not within\n");
+	    //VG_(umsg)("TRACE: Disabled???\n");
 	}
-    }
+	if (end <= tmb->end)
+	    break;
+
+	tmb = region_succ(tmb);
+    }while (tmb && end > tmb->start);
+
     if (got_a_hit)
 	++mh_logical_time;
     return crash_it;
@@ -598,43 +674,34 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 	tmb->access_matrix[i].call_stack = NULL;
 	tmb->access_matrix[i].time_stamp = 0;
     }
-    tmb->next = mh_track_list;
-    mh_track_list = tmb;
+
+    insert_nonoverlapping(tmb);
 }
 
 static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type type)
 {
     Addr end = addr + size;
-    struct mh_track_mem_block_t* tmb;
-    struct mh_track_mem_block_t** prevp = &mh_track_list;
+    struct mh_track_mem_block_t* tmb = region_lookup_maxle(addr);
 
-    for (tmb = *prevp; tmb; tmb = *prevp) {
-	if (addr == tmb->start && type == tmb->type) {
-	    if (clo_trace_mem) {
-		switch (tmb->type) {
-		case MH_TRACK:
-		    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
-			      tmb->name, (void*)addr, (void*)(addr + size));
-		    break;
-		case MH_READONLY:
-		    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
-			      tmb->name, (void*)addr, (void*)(addr + size));
-		    break;
-		default:
-		    tl_assert2(0, "Uknown block type %u", tmb->type);
-		}
-	    }
-	    tl_assert(end == tmb->end);
-	    *prevp = tmb->next;
-	    VG_(free) (tmb);
-	    return;
+    tl_assert2(tmb && addr == tmb->start && end == tmb->end,
+	       "Could not find region to remove [%p -> %p]", addr, end);
+    tl_assert((type & tmb->type) == type);
+
+    tmb->type &= ~type;
+    if (clo_trace_mem) {
+	if (tmb->type & MH_TRACK) {
+	    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
+		      tmb->name, (void*)addr, (void*)(addr + size));
 	}
-	else {
-	    prevp = &tmb->next;
+	if (tmb->type & MH_READONLY) {
+	    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
+		      tmb->name, (void*)addr, (void*)(addr + size));
 	}
     }
-    tl_assert(!"Could not find region to untrack");
-
+    if (!tmb->type) {
+	region_remove(tmb);
+	VG_(free) (tmb);
+    }
 }
 
 static void untrack_mem_write (Addr addr, SizeT size)
@@ -645,20 +712,17 @@ static void untrack_mem_write (Addr addr, SizeT size)
 static void track_able(Addr addr, SizeT size, Bool enabled)
 {
     Addr end = addr + size;
-    struct mh_track_mem_block_t* tmb;
+    struct mh_track_mem_block_t* tmb = region_lookup_maxle(addr);
 
-    for (tmb = mh_track_list; tmb; tmb = tmb->next) {
-	if (addr == tmb->start && end == tmb->end) {
-	    if (clo_trace_mem) {
-		VG_(umsg)("TRACE: %sable '%s' from %p to %p\n",
-			  (enabled ? "En" : "Dis"),
-			  tmb->name, (void*)addr, (void*)(addr + size));
-	    }
-	    tmb->enabled = enabled;
-	    return;
-	}
+    tl_assert2(tmb && addr == tmb->start && end == tmb->end,
+	       "Could not find region to %sable", enabled ? "en":"dis");
+
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: %sable '%s' from %p to %p\n",
+		  (enabled ? "En" : "Dis"),
+		  tmb->name, (void*)addr, (void*)(addr + size));
     }
-    tl_assert2(0, "Could not find region to %sable", enabled ? "en":"dis");
+    tmb->enabled = enabled;
 }
 
 
@@ -671,15 +735,22 @@ static void set_mem_readonly(Addr addr, SizeT size, const char* name)
 		  name, (void*)addr, (void*)(addr+size));
     }
 
-    tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
-    tmb->start = addr;
-    tmb->end = addr + size;
-    tmb->name = name;
-    tmb->birth_time_stamp = mh_logical_time++;
-    tmb->enabled = True;
-    tmb->type = MH_READONLY;
-    tmb->next = mh_track_list;
-    mh_track_list = tmb;
+    tmb = region_lookup_maxle(addr);
+    if (tmb->start == addr) {
+	tl_assert(tmb->end == addr+size);
+	tmb->type |= MH_READONLY;
+	tmb->readonly_time_stamp = mh_logical_time++;
+    }
+    else {
+	tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
+	tmb->start = addr;
+	tmb->end = addr + size;
+	tmb->name = name;
+	tmb->birth_time_stamp = mh_logical_time++;
+	tmb->enabled = True;
+	tmb->type = MH_READONLY;
+	insert_nonoverlapping(tmb);
+    }
 }
 
 static void set_mem_writable (Addr addr, SizeT size)
@@ -759,10 +830,10 @@ static void print_word(unsigned word_sz, struct mh_mem_access_t* ap)
 
 static void mh_fini(Int exitcode)
 {
-    struct mh_track_mem_block_t* tmb;
+    struct mh_track_mem_block_t* tmb = region_min();
 
-    for (tmb = mh_track_list; tmb; tmb=tmb->next) {
-      if (tmb->type == MH_TRACK) {
+    for (tmb = region_min(); tmb; tmb = region_succ(tmb)) {
+      if (tmb->type & MH_TRACK) {
 	unsigned wix = 0; /* word index */
 	Addr addr = tmb->start;
 	VG_(umsg) ("Memhist tracking '%s' from %p to %p with word size %u "
@@ -803,16 +874,19 @@ static void mh_fini(Int exitcode)
 	    }
 	}
       }
-      else if (tmb->type == MH_READONLY) {
-	  VG_(umsg) ("Readonly region '%s' from %p to %p created at time %u.\n",
+      if (tmb->type & MH_READONLY) {
+	  VG_(umsg) ("Region '%s' made READONLY from %p to %p at time %u.\n",
 		     tmb->name, (void*)tmb->start, (void*)tmb->end,
-		     tmb->birth_time_stamp);
+		     tmb->readonly_time_stamp);
       }
     }
 }
 
 static void mh_pre_clo_init(void)
 {
+    region_anchor.next = &region_anchor;
+    region_anchor.prev = &region_anchor;
+
    VG_(details_name)            ("Memhist");
    VG_(details_version)         (NULL);
    VG_(details_description)     ("Sverker's Valgrind tool for tracking memory access history");
