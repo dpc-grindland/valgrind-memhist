@@ -43,7 +43,7 @@
 #include "pub_tool_mallocfree.h"
 
 #include "memhist.h"  // client requests
-
+#include "rb_tree.h"
 
 #define MH_DEBUG
 
@@ -113,7 +113,7 @@ enum mh_track_type {
 
 struct mh_track_mem_block_t
 {
-    struct mh_track_mem_block_t *next, *prev;
+    rb_tree_node node;
     Addr start;
     Addr end;
     const char* name;
@@ -128,73 +128,66 @@ struct mh_track_mem_block_t
     unsigned hist_ix_vec[0];
 };
 
-static int region_cmp_key(struct mh_track_mem_block_t* a, Addr b_start)
+static int region_cmp_key(rb_tree_node* a_node, void* b_key)
 {
+    struct mh_track_mem_block_t* a = (struct mh_track_mem_block_t*)a_node;
+    Addr b_start = (Addr)b_key;
     return a->start < b_start ? -1 : (a->start == b_start ? 0 : 1);
 }
 
-static int region_cmp(struct mh_track_mem_block_t* a,
-		      struct mh_track_mem_block_t* b)
+static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
 {
-    return region_cmp_key(a, b->start);
+    struct mh_track_mem_block_t* b = (struct mh_track_mem_block_t*)b_node;
+    return region_cmp_key(a_node, (void*)b->start);
 }
 
-static struct mh_track_mem_block_t region_anchor;
+static void region_print(rb_tree_node* a_node, int depth)
+{
+    static char spaces[] = "                                                  ";
+    struct mh_track_mem_block_t* a = (struct mh_track_mem_block_t*)a_node;
+    VG_(umsg)("%.*s%p -> %p", depth, spaces, (void*)a->start, (void*)a->end);
+}
+
+
+static struct rb_tree region_tree;
 
 static
 struct mh_track_mem_block_t* region_insert(struct mh_track_mem_block_t* tmb)
 {
-    struct mh_track_mem_block_t* p;
-
-    for (p=region_anchor.next; p != &region_anchor; p=p->next) {
-	int c = region_cmp(p, tmb);
-	if (c >= 0) {
-	    if (c == 0)
-		return p;
-	    break;
-	}
-    }
-    tmb->next = p;
-    tmb->prev = p->prev;
-    p->prev->next = tmb;
-    p->prev = tmb;
-    return NULL;
+    return (struct mh_track_mem_block_t*) rb_tree_insert(&region_tree,
+							 &tmb->node);
 }
 
 static void region_remove(struct mh_track_mem_block_t* tmb)
 {
-    tmb->next->prev = tmb->prev;
-    tmb->prev->next = tmb->next;
+    rb_tree_remove(&region_tree, &tmb->node);
 }
 
 static
 struct mh_track_mem_block_t* region_min(void)
 {
-    return region_anchor.next == &region_anchor ? NULL : region_anchor.next;
+    return (struct mh_track_mem_block_t*) rb_tree_min(&region_tree);
 }
 
 static
 struct mh_track_mem_block_t* region_succ(struct mh_track_mem_block_t* tmb)
 {
-    return tmb->next == &region_anchor ? NULL : tmb->next;
+    return (struct mh_track_mem_block_t*) rb_tree_succ(&region_tree,
+						       &tmb->node);
 }
 
 static
 struct mh_track_mem_block_t* region_pred(struct mh_track_mem_block_t* tmb)
 {
-    return tmb->prev == &region_anchor ? NULL : tmb->prev;
+    return (struct mh_track_mem_block_t*) rb_tree_pred(&region_tree,
+						       &tmb->node);
 }
 
 static
 struct mh_track_mem_block_t* region_lookup_maxle(Addr addr)
 {
-    struct mh_track_mem_block_t *p;
-
-    for (p=region_anchor.next; p != &region_anchor; p=p->next) {
-	if (region_cmp_key(p, addr) > 0)
-	    break;
-    }
-    return region_pred(p);
+    return (struct mh_track_mem_block_t*) rb_tree_lookup_maxle(&region_tree,
+							       (void*)addr);
 }
 
 static void insert_nonoverlapping(struct mh_track_mem_block_t* tmb)
@@ -884,8 +877,7 @@ static void mh_fini(Int exitcode)
 
 static void mh_pre_clo_init(void)
 {
-    region_anchor.next = &region_anchor;
-    region_anchor.prev = &region_anchor;
+    rb_tree_init(&region_tree, region_cmp, region_cmp_key, region_print);
 
    VG_(details_name)            ("Memhist");
    VG_(details_version)         (NULL);
