@@ -1,0 +1,2 @@
+gcc -g -c -DUNIT_TEST ../rb_tree.c
+gcc -g -I.. rb_tree_test.c rb_tree.o -o rb_tree_test

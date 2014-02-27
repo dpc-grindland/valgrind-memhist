@@ -1,8 +1,20 @@
 #include "rb_tree.h"
 
-#include "pub_tool_libcassert.h"
+#ifdef UNIT_TEST
+#include <stdio.h>
+#include <stdlib.h>
+#  define ASSERT(C) ((C) ? (void)0 : assert_error(#C, __FILE__,__LINE__))
 
-#define ASSERT(C,T) tl_assert2((C),(T),0)
+static void assert_error(const char* txt, const char* file, int line)
+{
+    fprintf(stderr, "ASSERT(%s) FAILED at %s:%i\n", txt, file, line);
+    abort();
+}
+
+#else
+#  include "pub_tool_libcassert.h"
+#  define ASSERT(C) tl_assert(C)
+#endif
 
 /*
  * Initialize a new empty tree
@@ -49,7 +61,7 @@ static void left_rotate(rb_tree *tree, rb_tree_node *x)
     y->left = x;
     x->parent = y;
 
-    ASSERT(!tree->nil.red, "nil not red in LeftRotate");
+    ASSERT(!tree->nil.red);
 }
 
 
@@ -73,7 +85,7 @@ static void right_rotate(rb_tree *tree, rb_tree_node *y)
     x->right = y;
     y->parent = x;
 
-    ASSERT(!tree->nil.red, "nil not red in RightRotate");
+    ASSERT(!tree->nil.red);
 }
 
 
@@ -99,17 +111,17 @@ static rb_tree_node* insert_helper(rb_tree *tree, rb_tree_node *z)
 	    x = x->left;
 	} else if (cmp < 0) { /* x,key <= z.key */
 	    x = x->right;
-	} else return x;
+	} else
+	    return x;
     }
     z->parent = y;
-    if ((y == &tree->root) ||
-	(1 == tree->cmp(y, z))) { /* y.key > z.key */
+    if (y == &tree->root || cmp > 0) {
 	y->left = z;
     } else {
 	y->right = z;
     }
 
-    ASSERT(!tree->nil.red, "nil not red in TreeInsertHelp");
+    ASSERT(!tree->nil.red);
     return NULL;
 }
 
@@ -163,8 +175,8 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     }
     tree->root.left->red = 0;
 
-    ASSERT(!tree->nil.red, "nil not red in RBTreeInsert");
-    ASSERT(!tree->root.red, "root not red in RBTreeInsert");
+    ASSERT(!tree->nil.red);
+    ASSERT(!tree->root.red);
     return NULL;
 }
 
@@ -261,17 +273,16 @@ rb_tree_node* rb_tree_lookup_exact(rb_tree *tree, void *key)
     rb_tree_node *nil = &tree->nil;
     int cmp;
 
-    if (x == nil) return NULL;
-
-    cmp = tree->cmp_key(x, key);
-    while (cmp) {
-	if (cmp > 0) { /* x->key > key */
-	    x = x->left;
-	} else {
-	    x = x->right;
-	}
-	if (x == nil) return NULL;
+    for (;;) {
+	if (x == nil)
+	    return NULL;
 	cmp = tree->cmp_key(x, key);
+	if (cmp > 0) /* x->key > key */
+	    x = x->left;
+	else if (cmp < 0)
+	    x = x->right;
+	else
+	    break;
     }
     return x;
 }
@@ -288,13 +299,13 @@ rb_tree_node* rb_tree_lookup_maxle(rb_tree *tree, void *key)
 
     while (x != nil) {
 	cmp = tree->cmp_key(x, key);
-	if (cmp == 0) return x;
 	if (cmp > 0) { /* x->key > key */
 	    x = x->left;
-	} else {
+	} else if (cmp < 0) {
 	    maxless = x;
 	    x = x->right;
-	}
+	} else
+	    return x;
     }
     return maxless;
 }
@@ -362,14 +373,15 @@ static void remove_fixup(rb_tree *tree, rb_tree_node *x)
     }
     x->red = 0;
 
-    ASSERT(!tree->nil.red, "nil not black in RBDeleteFixUp");
+    ASSERT(!tree->nil.red);
 }
 
 
 /* Remove node from tree.
  * The node must exist in the tree.
  */
-void rb_tree_remove(rb_tree *tree, rb_tree_node *z) {
+void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
+{
     rb_tree_node *y;
     rb_tree_node *x;
     rb_tree_node *nil =  &tree->nil;
@@ -388,7 +400,7 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z) {
     }
     if (y != z) { /* y should not be nil in this case */
 
-	ASSERT((y != &tree->nil), "y is nil in RBDelete\n");
+	ASSERT(y != &tree->nil);
 
 	/* y is the node to splice out and x is its child */
 
@@ -408,6 +420,6 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z) {
 	if (!(y->red)) remove_fixup(tree, x);
     }
 
-    ASSERT(!tree->nil.red, "nil not black in RBDelete");
+    ASSERT(!tree->nil.red);
 }
 

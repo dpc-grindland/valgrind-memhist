@@ -24,10 +24,14 @@ typedef struct rb_tree
     rb_tree_node nil;
 } rb_tree;
 
+typedef int rb_tree_cmp_FT(rb_tree_node* a, rb_tree_node* b);
+typedef int rb_tree_cmp_key_FT(rb_tree_node* a, void* b_key);
+typedef void rb_tree_print_node_FT(rb_tree_node*, int depth);
+
 void rb_tree_init(rb_tree* newTree,
-		  int  (*cmp)(rb_tree_node* a, rb_tree_node* b),
-		  int  (*cmp_key)(rb_tree_node* a, void* b_key),
-		  void (*print_node)(rb_tree_node*, int depth));
+		  rb_tree_cmp_FT*,
+		  rb_tree_cmp_key_FT*,
+		  rb_tree_print_node_FT*);
 rb_tree_node * rb_tree_insert(rb_tree*, rb_tree_node*);
 void rb_tree_print(rb_tree*);
 void rb_tree_remove(rb_tree*, rb_tree_node*);
