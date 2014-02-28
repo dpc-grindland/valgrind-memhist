@@ -807,8 +807,10 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 static void print_word(unsigned word_sz, struct mh_mem_access_t* ap)
 {
     switch (word_sz) {
+#if VEX_HOST_WORDSIZE == 8
     case sizeof(HWord):
 	VG_(umsg)("%p", (void*)ap->data); break;
+#endif
     case sizeof(int):
 	VG_(umsg)("%#x", (int)ap->data); break;
     case sizeof(short):
