@@ -49,8 +49,10 @@
 
 #ifdef MH_DEBUG
 #  define MH_ASSERT tl_assert
+#  define MH_ASSERT2 tl_assert2
 #else
 #  define MH_ASSERT(C)
+#  define MH_ASSERT2(C, FMT, ARGS...)
 #endif
 
 
@@ -85,11 +87,12 @@ static void mh_print_debug_usage(void)
 }
 
 
+#ifdef MH_DEBUG
 static Bool fit_in_ubytes(ULong v, Int nbytes)
 {
-    return (v >> (nbytes*8)) == 0;
+    return nbytes >= sizeof(ULong) || (v >> (nbytes*8)) == 0;
 }
-
+#endif
 
 
 /*
@@ -315,16 +318,16 @@ static Int track_store(Addr addr, SizeT size, Long data)
 }
 
 VG_REGPARM(track_store_REGPARM)
-static Int track_cas(Addr addr, SizeT size, Long expected, Long data)
+static Int track_cas(Addr addr, SizeT size, ULong expected, ULong data)
 {
-    Long actual;
-    MH_ASSERT(fit_in_ubytes(expected, size));
-    MH_ASSERT(fit_in_ubytes(data, size));
+    ULong actual;
+    MH_ASSERT2(fit_in_ubytes(expected, size), " expected=%llx size=%u", expected, (int)size);
+    MH_ASSERT2(fit_in_ubytes(data, size), " data=%llx size=%u", data, (int)size);
     switch (size) {
-    case 1: actual = *(Char*)addr;  break;
-    case 2: actual = *(Short*)addr; break;
-    case 4: actual = *(Int*)addr;   break;
-    case 8: actual = *(Long*)addr;  break;
+    case 1: actual = *(UChar*)addr;  break;
+    case 2: actual = *(UShort*)addr; break;
+    case 4: actual = *(UInt*)addr;   break;
+    case 8: actual = *(ULong*)addr;  break;
     default:
 	tl_assert2(0,"CAS on %u-words not implemented",size);
     }
@@ -607,6 +610,11 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
                /* SC */
                dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
                if (clo_track_mem) {
+		  /* Todo:
+		   * Do real *conditional* store as we do for CAS above
+		   * This is trickier to do as we don't know until *after* the
+		   * original LLSC instruction if the store really happened.
+		   */
                   addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
 			      NULL, st->Ist.LLSC.storedata, currIP);
 	       }
