@@ -99,7 +99,7 @@ static rb_tree_node* insert_helper(rb_tree *tree, rb_tree_node *z)
     rb_tree_node *x;
     rb_tree_node *y;
     rb_tree_node *nil = &tree->nil;
-    int cmp;
+    int cmp = 1; /* to insert first node as root->left */
 
     z->left = z->right = nil;
     y = &tree->root;
@@ -115,7 +115,7 @@ static rb_tree_node* insert_helper(rb_tree *tree, rb_tree_node *z)
 	    return x;
     }
     z->parent = y;
-    if (y == &tree->root || cmp > 0) {
+    if (cmp > 0) {
 	y->left = z;
     } else {
 	y->right = z;
