@@ -727,31 +727,103 @@ static void track_able(Addr addr, SizeT size, Bool enabled)
 }
 
 
-static void set_mem_readonly(Addr addr, SizeT size, const char* name)
+static void new_readonly_region(Addr start, Addr end, const char* name)
 {
     struct mh_track_mem_block_t *tmb;
+    tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
+    tmb->start = start;
+    tmb->end = end;
+    tmb->name = name;
+    tmb->birth_time_stamp = mh_logical_time++;
+    tmb->enabled = True;
+    tmb->type = MH_READONLY;
+    insert_nonoverlapping(tmb);
+}
+
+static void set_mem_readonly(Addr start, SizeT size, const char* name)
+{
+    Addr end = start + size;
+    struct mh_track_mem_block_t *tmb;
+    struct mh_track_mem_block_t *succ;
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Set '%s' readonly from %p to %p\n",
-		  name, (void*)addr, (void*)(addr+size));
+		  name, (void*)start, (void*)end);
     }
 
-    tmb = region_lookup_maxle(addr);
-    if (tmb->start == addr) {
-	tl_assert(tmb->end == addr+size);
-	tmb->type |= MH_READONLY;
-	tmb->readonly_time_stamp = mh_logical_time++;
+    tmb = region_lookup_maxle(start);
+    while (tmb) {
+	tl_assert(tmb->start <= start);
+	if (tmb->end < start
+	    || (tmb->end == start && tmb->type != MH_READONLY))
+	{
+	    tmb = region_succ(tmb);
+	    tl_assert(!tmb || tmb->start > start);
+	    if (!tmb || tmb->start > end
+		|| (tmb->start == end && tmb->type != MH_READONLY)) {
+		new_readonly_region(start, end, name);
+		return;
+	    }
+	}
+
+	/* tmb is the first adjacent or colliding region */
+
+	if (tmb->type == MH_READONLY) {
+	    if (tmb->start > start) {
+		/* extend start of region */
+		tmb->start = start;
+	    }
+	    if (tmb->end > end)
+		return; /* already part of this region */
+
+	    /* try extend end of region */
+	    while (1) {
+		Addr succ_end;
+		succ = region_succ(tmb);
+		if (!succ || succ->start >= end)
+		    break;
+		/* colliding region */
+		tl_assert(succ->type == MH_READONLY);
+		succ_end = succ->end;
+		region_remove(succ);
+		VG_(free)(succ);
+		tmb->end = succ_end;
+		if (succ_end >= end)
+		    return;
+	    }
+
+	    if (succ && succ->start == end && succ->type == MH_READONLY) {
+		/* merge with adjacent succ */
+		region_remove(succ);
+		tmb->end = succ->end;
+		VG_(free) (succ);
+	    }
+	    else
+		tmb->end = end;
+
+	    return;
+	}
+	else if (tmb->type & MH_READONLY) {
+	    /* a non extendable readonly region */
+
+	    if (tmb->start > start)
+		new_readonly_region(start, tmb->start, name);
+	    if (tmb->end >= end)
+		return;
+
+	    start = tmb->end;
+	    continue;
+	}
+	else {
+	    tl_assert(tmb->start == start);
+	    tl_assert(tmb->end == end);
+	    tmb->type |= MH_READONLY;
+	    tmb->readonly_time_stamp = mh_logical_time++;
+	    return;
+	}
     }
-    else {
-	tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
-	tmb->start = addr;
-	tmb->end = addr + size;
-	tmb->name = name;
-	tmb->birth_time_stamp = mh_logical_time++;
-	tmb->enabled = True;
-	tmb->type = MH_READONLY;
-	insert_nonoverlapping(tmb);
-    }
+
+    new_readonly_region(start, end, name);
 }
 
 static void set_mem_writable (Addr addr, SizeT size)
