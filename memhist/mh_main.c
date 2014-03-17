@@ -110,9 +110,18 @@ struct mh_mem_access_t
 };
 
 enum mh_track_type {
-    MH_TRACK    = 1,
-    MH_READONLY = 2
+    MH_NOWRITE  = 1,
+    MH_NOREAD   = 2,
+    MH_TRACK    = 4
 };
+
+static const char* prot_txt(enum mh_track_type flags)
+{
+    static const char* txt[] = {"NOWRITE", "NOREAD", "NOACCESS" };
+    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+
+    return txt[(flags & 3) - 1];
+}
 
 struct mh_track_mem_block_t
 {
@@ -190,6 +199,13 @@ static
 struct mh_track_mem_block_t* region_lookup_maxle(Addr addr)
 {
     return (struct mh_track_mem_block_t*) rb_tree_lookup_maxle(&region_tree,
+							       (void*)addr);
+}
+
+static
+struct mh_track_mem_block_t* region_lookup_ming(Addr addr)
+{
+    return (struct mh_track_mem_block_t*) rb_tree_lookup_ming(&region_tree,
 							       (void*)addr);
 }
 
@@ -293,7 +309,7 @@ static Int track_store(Addr addr, SizeT size, Long data)
 	tl_assert(end > tmb->start && start < tmb->end);
 
 	if (tmb->enabled) {
-	    if (tmb->type & MH_READONLY) {
+	    if (tmb->type & MH_NOWRITE) {
 		report_store_in_readonly(tmb, addr, size, data);
 		crash_it = 1;
 		break;
@@ -694,7 +710,7 @@ static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type typ
 	    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
 		      tmb->name, (void*)addr, (void*)(addr + size));
 	}
-	if (tmb->type & MH_READONLY) {
+	if (tmb->type & MH_NOWRITE) {
 	    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
 		      tmb->name, (void*)addr, (void*)(addr + size));
 	}
@@ -727,7 +743,9 @@ static void track_able(Addr addr, SizeT size, Bool enabled)
 }
 
 
-static void new_readonly_region(Addr start, Addr end, const char* name)
+static struct mh_track_mem_block_t* new_region(Addr start, Addr end,
+					       const char* name,
+					       unsigned flags)
 {
     struct mh_track_mem_block_t *tmb;
     tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
@@ -736,99 +754,173 @@ static void new_readonly_region(Addr start, Addr end, const char* name)
     tmb->name = name;
     tmb->birth_time_stamp = mh_logical_time++;
     tmb->enabled = True;
-    tmb->type = MH_READONLY;
+    tmb->type = flags;
     insert_nonoverlapping(tmb);
+    return tmb;
 }
 
-static void set_mem_readonly(Addr start, SizeT size, const char* name)
+static void set_mem_flags(Addr start, SizeT size, const char* name,
+			  enum mh_track_type flags)
 {
     Addr end = start + size;
-    struct mh_track_mem_block_t *tmb;
-    struct mh_track_mem_block_t *succ;
+    struct mh_track_mem_block_t *rp;
+    enum { VOID_AT_START, REGION_AT_START } state;
+
+    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+    tl_assert(!(flags & MH_TRACK));
 
     if (clo_trace_mem) {
-	VG_(umsg)("TRACE: Set '%s' readonly from %p to %p\n",
-		  name, (void*)start, (void*)end);
+	VG_(umsg)("TRACE: Set protection %s for '%s' from %p to %p\n",
+		  prot_txt(flags), name, (void*)start, (void*)end);
     }
 
-    tmb = region_lookup_maxle(start);
-    while (tmb) {
-	tl_assert(tmb->start <= start);
-	if (tmb->end < start
-	    || (tmb->end == start && tmb->type != MH_READONLY))
+    rp = region_lookup_maxle(start);
+    if (rp) {
+	if (rp->end < start
+	    || (rp->end == start && rp->type != flags))
 	{
-	    tmb = region_succ(tmb);
-	    tl_assert(!tmb || tmb->start > start);
-	    if (!tmb || tmb->start > end
-		|| (tmb->start == end && tmb->type != MH_READONLY)) {
-		new_readonly_region(start, end, name);
-		return;
-	    }
-	}
-
-	/* tmb is the first adjacent or colliding region */
-
-	if (tmb->type == MH_READONLY) {
-	    if (tmb->start > start) {
-		/* extend start of region */
-		tmb->start = start;
-	    }
-	    if (tmb->end > end)
-		return; /* already part of this region */
-
-	    /* try extend end of region */
-	    while (1) {
-		Addr succ_end;
-		succ = region_succ(tmb);
-		if (!succ || succ->start >= end)
-		    break;
-		/* colliding region */
-		tl_assert(succ->type == MH_READONLY);
-		succ_end = succ->end;
-		region_remove(succ);
-		VG_(free)(succ);
-		tmb->end = succ_end;
-		if (succ_end >= end)
-		    return;
-	    }
-
-	    if (succ && succ->start == end && succ->type == MH_READONLY) {
-		/* merge with adjacent succ */
-		region_remove(succ);
-		tmb->end = succ->end;
-		VG_(free) (succ);
-	    }
-	    else
-		tmb->end = end;
-
-	    return;
-	}
-	else if (tmb->type & MH_READONLY) {
-	    /* a non extendable readonly region */
-
-	    if (tmb->start > start)
-		new_readonly_region(start, tmb->start, name);
-	    if (tmb->end >= end)
-		return;
-
-	    start = tmb->end;
-	    continue;
+	    state = VOID_AT_START;
+	    rp = region_succ(rp);
 	}
 	else {
-	    tl_assert(tmb->start == start);
-	    tl_assert(tmb->end == end);
-	    tmb->type |= MH_READONLY;
-	    tmb->readonly_time_stamp = mh_logical_time++;
-	    return;
+	    state = REGION_AT_START;
 	}
     }
+    else {
+	state = VOID_AT_START;
+	rp = region_lookup_ming(start);
+    }
 
-    new_readonly_region(start, end, name);
+    while (start < end) {
+	switch (state) {
+	case VOID_AT_START:
+	    tl_assert(!rp || rp->start > start);
+	    if (!rp || rp->start > end) {
+		new_region(start, end, name, flags);
+		return;
+	    }
+	    else if (rp->type == flags) {
+		/* extent start of region */
+		rp->start = start;
+	    }
+	    else {
+		new_region(start, rp->start, name, flags);
+		start = rp->start;
+	    }
+	    state = REGION_AT_START;
+	    break;
+
+	case REGION_AT_START:
+	    tl_assert(rp && rp->start <= start && rp->end >= start);
+	    if (rp->end > end) {
+		tl_assert(rp->type & flags);
+		return;
+	    }
+	    if (rp->type == flags) {
+		struct mh_track_mem_block_t *succ = region_succ(rp);
+		if (!succ || succ->start > end) {
+		    rp->end = end;
+		    return;
+		}
+		if (succ->type == flags) {
+		    Addr succ_end = succ->end;
+		    region_remove(succ);
+		    VG_(free)(succ);
+		    rp->end = succ_end;
+		}
+		else {
+		    rp->end = succ->start;
+		    rp = succ;
+		    start = rp->start;
+		}
+		/*state = REGION_AT_START */
+	    }
+	    else {
+		rp->type |= flags;
+		if (rp->end == end)
+		    return;
+		start = rp->end;
+		rp = region_succ(rp);
+		state = (!rp || rp->start > start) ? VOID_AT_START : REGION_AT_START;
+	    }
+	    break;
+	}
+    }
 }
 
-static void set_mem_writable (Addr addr, SizeT size)
+static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 {
-    remove_track_mem_block(addr, size, MH_READONLY);
+    Addr end = start + size;
+    struct mh_track_mem_block_t *rp, *pred = NULL;
+
+    if (clo_trace_mem) {
+	VG_(umsg)("TRACE: Clear protection %s from %p to %p\n",
+		  prot_txt(flags), (void*)start, (void*)end);
+    }
+    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+    tl_assert(!(flags & MH_TRACK));
+
+    rp = region_lookup_maxle(start);
+    if (rp) {
+	if (rp->start < start) {
+	    if (rp->end > start) {
+		tl_assert(!(rp->type & MH_TRACK));
+
+		if (rp->type & flags) {
+		    Addr old_end = rp->end;
+		    enum mh_track_type new_flags = rp->type & ~flags;
+		    rp->end = start;
+		    if (new_flags) {
+			rp = new_region(start, old_end, rp->name, new_flags);
+		    }
+		}
+	    }
+	    pred = rp;
+	    rp = region_succ(rp);
+	}
+    }
+    else {
+	rp = region_lookup_ming(start);
+    }
+
+    while (rp && rp->start < end) {
+	if (rp->type & flags) {
+	    enum mh_track_type new_flags = rp->type & ~flags;
+	    if (rp->end > end) {
+		Addr old_end = rp->end;
+
+		tl_assert(!(rp->type & MH_TRACK));
+		if (new_flags) { /* split region */
+		    rp->type = new_flags;
+		    rp->end = end;
+		    new_region(end, old_end, rp->name, new_flags);
+		}
+		else { /* shrink region */
+		    rp->start = end;
+		    return;
+		}
+	    }
+	    else if (new_flags) {
+		rp->type = new_flags;
+	    }
+	    else { /* remove region */
+		pred =  rp;
+		rp = region_succ(rp);
+		region_remove(pred);
+		pred = NULL;
+		continue;
+	    }
+	}
+	if (pred && pred->end == rp->start
+	    && pred->type == rp->type && !(rp->type & MH_TRACK))
+	{ /* merge regions */
+	    Addr pred_start = pred->start;
+	    region_remove(pred);
+	    rp->start = pred_start;
+	}
+	pred = rp;
+	rp = region_succ(rp);
+    }
 }
 
 
@@ -862,13 +954,14 @@ static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
 	  *ret = -1;
 	  break;
 
-      case VG_USERREQ__SET_READONLY:
-	 set_mem_readonly(arg[1], arg[2], (char*)arg[3]);
+      case VG_USERREQ__SET_PROTECTION:
+	 set_mem_flags(arg[1], arg[2], (char*)arg[3],
+		       (enum mh_track_type) arg[4]);
 	 *ret = -1;
 	 break;
 
-      case VG_USERREQ__SET_WRITABLE:
-	  set_mem_writable(arg[1], arg[2]);
+      case VG_USERREQ__CLEAR_PROTECTION:
+	  clear_mem_flags(arg[1], arg[2], (enum mh_track_type) arg[3]);
 	  *ret = -1;
 	  break;
 
@@ -949,10 +1042,10 @@ static void mh_fini(Int exitcode)
 	    }
 	}
       }
-      if (tmb->type & MH_READONLY) {
-	  VG_(umsg) ("Region '%s' made READONLY from %p to %p at time %u.\n",
-		     tmb->name, (void*)tmb->start, (void*)tmb->end,
-		     tmb->readonly_time_stamp);
+      if (tmb->type & MH_NOWRITE) {
+	  VG_(umsg) ("Region '%s' set as %s from %p to %p.\n",
+		     tmb->name, prot_txt(tmb->type),
+		     (void*)tmb->start, (void*)tmb->end);
       }
     }
 }

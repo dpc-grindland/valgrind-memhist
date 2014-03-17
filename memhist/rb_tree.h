@@ -40,4 +40,5 @@ rb_tree_node* rb_tree_pred(rb_tree*,rb_tree_node*);
 rb_tree_node* rb_tree_succ(rb_tree*,rb_tree_node*);
 rb_tree_node* rb_tree_lookup_exact(rb_tree*, void*);
 rb_tree_node* rb_tree_lookup_maxle(rb_tree* tree, void* key);
+rb_tree_node* rb_tree_lookup_ming(rb_tree* tree, void* key);
 

@@ -310,6 +310,28 @@ rb_tree_node* rb_tree_lookup_maxle(rb_tree *tree, void *key)
     return maxless;
 }
 
+/* Return node with the minimum key that is greater than 'key'
+ * or NULL if no such node exist.
+ */
+rb_tree_node* rb_tree_lookup_ming(rb_tree *tree, void *key)
+{
+    rb_tree_node *x = tree->root.left;
+    rb_tree_node *nil = &tree->nil;
+    rb_tree_node *ming = NULL;
+    int cmp;
+
+    while (x != nil) {
+	cmp = tree->cmp_key(x, key);
+	if (cmp > 0) { /* x->key > key */
+	    ming = x;
+	    x = x->left;
+	} else if (cmp <= 0) {
+	    x = x->right;
+	}
+    }
+    return ming;
+}
+
 
 /* Perform rotations and changes colors to restore red-black
  * properties after a node is deleted.

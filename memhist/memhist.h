@@ -18,8 +18,8 @@ typedef
       VG_USERREQ__UNTRACK_MEM_WRITE,
       VG_USERREQ__TRACK_ENABLE,
       VG_USERREQ__TRACK_DISABLE,
-      VG_USERREQ__SET_READONLY,
-      VG_USERREQ__SET_WRITABLE
+      VG_USERREQ__SET_PROTECTION,
+      VG_USERREQ__CLEAR_PROTECTION
 
    } Vg_MemHistClientRequest;
 
@@ -43,14 +43,17 @@ typedef
                             VG_USERREQ__TRACK_DISABLE,        \
                             (_qzz_addr), (_qzz_len), 0, 0, 0)
 
-#define VALGRIND_SET_READONLY(_qzz_addr,_qzz_len, _qzz_name)	\
-    VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
-                            VG_USERREQ__SET_READONLY,        \
-			    (_qzz_addr), (_qzz_len), (_qzz_name), 0, 0)
+#define VG_MEM_NOWRITE 1
+#define VG_MEM_NOREAD 2
 
-#define VALGRIND_SET_WRITABLE(_qzz_addr,_qzz_len)	\
+#define VALGRIND_SET_PROTECTION(_qzz_addr,_qzz_len, _qzz_name, _qzz_prot)	\
     VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
-                            VG_USERREQ__SET_WRITABLE,        \
-			    (_qzz_addr), (_qzz_len), 0, 0, 0)
+                            VG_USERREQ__SET_PROTECTION,        \
+			    (_qzz_addr), (_qzz_len), (_qzz_name), (_qzz_prot), 0)
+
+#define VALGRIND_CLEAR_PROTECTION(_qzz_addr,_qzz_len, _qzz_prot)	\
+    VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
+                            VG_USERREQ__CLEAR_PROTECTION,        \
+			    (_qzz_addr), (_qzz_len), (_qzz_prot), 0, 0)
 
 #endif // __MEMHIST_H
