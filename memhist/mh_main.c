@@ -4,11 +4,7 @@
 /*--------------------------------------------------------------------*/
 
 /*
-   This file is copied from Lackey, an example Valgrind tool that does
-   some simple program measurement and tracing.
-
-   Copyright (C) 2002-2010 Nicholas Nethercote
-      njn@valgrind.org
+   Copyright (C) 2014 Sverker Eriksson
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -60,10 +56,9 @@
 /*--- Command line options                                 ---*/
 /*------------------------------------------------------------*/
 
-/* Command line options controlling instrumentation kinds, as described at
- * the top of this file. */
-static Bool clo_track_mem       = True;
-static Bool clo_trace_mem       = False;
+/* Command line options controlling instrumentation kinds */
+static Bool clo_track_mem = True;
+static Bool clo_trace_mem = False;
 
 static Bool mh_process_cmd_line_option(const HChar* arg)
 {
@@ -123,7 +118,7 @@ static const char* prot_txt(enum mh_track_type flags)
     return txt[(flags & 3) - 1];
 }
 
-struct mh_track_mem_block_t
+struct mh_region_t
 {
     rb_tree_node node;
     Addr start;
@@ -142,21 +137,21 @@ struct mh_track_mem_block_t
 
 static int region_cmp_key(rb_tree_node* a_node, void* b_key)
 {
-    struct mh_track_mem_block_t* a = (struct mh_track_mem_block_t*)a_node;
+    struct mh_region_t* a = (struct mh_region_t*)a_node;
     Addr b_start = (Addr)b_key;
     return a->start < b_start ? -1 : (a->start == b_start ? 0 : 1);
 }
 
 static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
 {
-    struct mh_track_mem_block_t* b = (struct mh_track_mem_block_t*)b_node;
+    struct mh_region_t* b = (struct mh_region_t*)b_node;
     return region_cmp_key(a_node, (void*)b->start);
 }
 
 static void region_print(rb_tree_node* a_node, int depth)
 {
     static char spaces[] = "                                                  ";
-    struct mh_track_mem_block_t* a = (struct mh_track_mem_block_t*)a_node;
+    struct mh_region_t* a = (struct mh_region_t*)a_node;
     VG_(umsg)("%.*s%p -> %p", depth, spaces, (void*)a->start, (void*)a->end);
 }
 
@@ -164,57 +159,57 @@ static void region_print(rb_tree_node* a_node, int depth)
 static struct rb_tree region_tree;
 
 static
-struct mh_track_mem_block_t* region_insert(struct mh_track_mem_block_t* tmb)
+struct mh_region_t* region_insert(struct mh_region_t* rp)
 {
-    return (struct mh_track_mem_block_t*) rb_tree_insert(&region_tree,
-							 &tmb->node);
+    return (struct mh_region_t*) rb_tree_insert(&region_tree,
+							 &rp->node);
 }
 
-static void region_remove(struct mh_track_mem_block_t* tmb)
+static void region_remove(struct mh_region_t* rp)
 {
-    rb_tree_remove(&region_tree, &tmb->node);
-}
-
-static
-struct mh_track_mem_block_t* region_min(void)
-{
-    return (struct mh_track_mem_block_t*) rb_tree_min(&region_tree);
+    rb_tree_remove(&region_tree, &rp->node);
 }
 
 static
-struct mh_track_mem_block_t* region_succ(struct mh_track_mem_block_t* tmb)
+struct mh_region_t* region_min(void)
 {
-    return (struct mh_track_mem_block_t*) rb_tree_succ(&region_tree,
-						       &tmb->node);
+    return (struct mh_region_t*) rb_tree_min(&region_tree);
 }
 
 static
-struct mh_track_mem_block_t* region_pred(struct mh_track_mem_block_t* tmb)
+struct mh_region_t* region_succ(struct mh_region_t* rp)
 {
-    return (struct mh_track_mem_block_t*) rb_tree_pred(&region_tree,
-						       &tmb->node);
+    return (struct mh_region_t*) rb_tree_succ(&region_tree,
+						       &rp->node);
 }
 
 static
-struct mh_track_mem_block_t* region_lookup_maxle(Addr addr)
+struct mh_region_t* region_pred(struct mh_region_t* rp)
 {
-    return (struct mh_track_mem_block_t*) rb_tree_lookup_maxle(&region_tree,
+    return (struct mh_region_t*) rb_tree_pred(&region_tree,
+						       &rp->node);
+}
+
+static
+struct mh_region_t* region_lookup_maxle(Addr addr)
+{
+    return (struct mh_region_t*) rb_tree_lookup_maxle(&region_tree,
 							       (void*)addr);
 }
 
 static
-struct mh_track_mem_block_t* region_lookup_ming(Addr addr)
+struct mh_region_t* region_lookup_ming(Addr addr)
 {
-    return (struct mh_track_mem_block_t*) rb_tree_lookup_ming(&region_tree,
+    return (struct mh_region_t*) rb_tree_lookup_ming(&region_tree,
 							       (void*)addr);
 }
 
-static void insert_nonoverlapping(struct mh_track_mem_block_t* tmb)
+static void insert_nonoverlapping(struct mh_region_t* rp)
 {
-    struct mh_track_mem_block_t* clash = region_insert(tmb);
+    struct mh_region_t* clash = region_insert(rp);
     tl_assert(!clash);
-    tl_assert(!(clash=region_pred(tmb)) || clash->end <= tmb->start);
-    tl_assert(!(clash=region_succ(tmb)) || clash->start >= tmb->end);
+    tl_assert(!(clash=region_pred(rp)) || clash->end <= rp->start);
+    tl_assert(!(clash=region_succ(rp)) || clash->start >= rp->end);
 }
 
 static unsigned mh_logical_time = 0;
@@ -231,7 +226,7 @@ static void track_load(Addr addr, SizeT size)
 }
 */
 
-static void report_store_in_block(struct mh_track_mem_block_t *tmb,
+static void report_store_in_block(struct mh_region_t *rp,
 				  Addr addr, SizeT size, Addr64 data)
 {
     ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
@@ -241,25 +236,25 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
     Addr start = addr;
     Addr end = addr + size;
 
-    if (start < tmb->start) {
+    if (start < rp->start) {
 	union {
 	    Addr64 words[2];
 	    char bytes[2*8];
 	}u;
-	int offs = tmb->start - start;
+	int offs = rp->start - start;
 	u.words[0] = data;
 	u.words[1] = 0;
 	tl_assert(offs < 8);
 	data = *(Addr64*) &u.bytes[offs];    /* BUG: Unaligned word access */
-	start = tmb->start;
+	start = rp->start;
     }
-    if (end > tmb->end)
-	end = tmb->end;
+    if (end > rp->end)
+	end = rp->end;
 
-    start_wix = (start - tmb->start) / tmb->word_sz;
-    end_wix = (end - tmb->start - 1) / tmb->word_sz + 1;
+    start_wix = (start - rp->start) / rp->word_sz;
+    end_wix = (end - rp->start - 1) / rp->word_sz + 1;
     tl_assert(start_wix < end_wix);
-    tl_assert(end_wix <= tmb->nwords);
+    tl_assert(end_wix <= rp->nwords);
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
@@ -269,22 +264,22 @@ static void report_store_in_block(struct mh_track_mem_block_t *tmb,
 
     for (wix = start_wix; wix < end_wix; wix++) {
 	int i;
-	unsigned hix = tmb->hist_ix_vec[wix]++;
+	unsigned hix = rp->hist_ix_vec[wix]++;
 
-	if (tmb->hist_ix_vec[wix] >= tmb->history)
-	    tmb->hist_ix_vec[wix] = 0;
+	if (rp->hist_ix_vec[wix] >= rp->history)
+	    rp->hist_ix_vec[wix] = 0;
 
-	i = (tmb->history * wix) + hix;
+	i = (rp->history * wix) + hix;
 	//VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
-	tmb->access_matrix[i].call_stack = ec;
-	tmb->access_matrix[i].time_stamp = mh_logical_time;
-	tmb->access_matrix[i].data = data;
+	rp->access_matrix[i].call_stack = ec;
+	rp->access_matrix[i].time_stamp = mh_logical_time;
+	rp->access_matrix[i].data = data;
 
-	start += tmb->word_sz;
+	start += rp->word_sz;
     }
 }
 
-static void report_store_in_readonly(struct mh_track_mem_block_t *tmb,
+static void report_store_in_readonly(struct mh_region_t *rp,
 				     Addr addr, SizeT size, Addr64 data)
 {
     VG_(umsg)("Provoking SEGV: %u bytes written to READONLY mem at addr %p at time %u:\n",
@@ -298,35 +293,35 @@ static Int track_store(Addr addr, SizeT size, Long data)
 {
     Addr start = addr;
     Addr end = addr + size;
-    struct mh_track_mem_block_t *tmb = region_lookup_maxle(addr);
+    struct mh_region_t *rp = region_lookup_maxle(addr);
     Bool got_a_hit = 0;
     Int crash_it = 0;
 
-    if (!tmb || start >= tmb->end)
+    if (!rp || start >= rp->end)
 	return 0;
 
     do {
-	tl_assert(end > tmb->start && start < tmb->end);
+	tl_assert(end > rp->start && start < rp->end);
 
-	if (tmb->enabled) {
-	    if (tmb->type & MH_NOWRITE) {
-		report_store_in_readonly(tmb, addr, size, data);
+	if (rp->enabled) {
+	    if (rp->type & MH_NOWRITE) {
+		report_store_in_readonly(rp, addr, size, data);
 		crash_it = 1;
 		break;
 	    }
-	    if (tmb->type & MH_TRACK) {
-		report_store_in_block(tmb, addr, size, data);
+	    if (rp->type & MH_TRACK) {
+		report_store_in_block(rp, addr, size, data);
 	    }
 	    got_a_hit = 1;
 	}
 	else {
 	    //VG_(umsg)("TRACE: Disabled???\n");
 	}
-	if (end <= tmb->end)
+	if (end <= rp->end)
 	    break;
 
-	tmb = region_succ(tmb);
-    }while (tmb && end > tmb->start);
+	rp = region_succ(rp);
+    }while (rp && end > rp->start);
 
     if (got_a_hit)
 	++mh_logical_time;
@@ -581,11 +576,6 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
          }
 
          case Ist_CAS: {
-            /* We treat it as a read and a write of the location.  I
-               think that is the same behaviour as it was before IRCAS
-               was introduced, since prior to that point, the Vex
-               front ends would translate a lock-prefixed instruction
-               into a (normal) read followed by a (normal) write. */
 	    if (clo_track_mem) {
 		Int    dataSize;
 		IRCAS*  cas = st->Ist.CAS.details;
@@ -658,12 +648,12 @@ static unsigned align_up(unsigned unit, unsigned value)
 static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history,
 			    const char* name)
 {
-    struct mh_track_mem_block_t *tmb;
+    struct mh_region_t *rp;
     const unsigned nwords = (size + word_sz - 1) / word_sz;
-    const unsigned sizeof_hist_ix_vec = nwords * sizeof(*tmb->hist_ix_vec);
+    const unsigned sizeof_hist_ix_vec = nwords * sizeof(*rp->hist_ix_vec);
     unsigned i;
     const unsigned matrix_offset = align_up(sizeof(void*),
-					    (sizeof(struct mh_track_mem_block_t)
+					    (sizeof(struct mh_region_t)
 					     + sizeof_hist_ix_vec));
 
     if (clo_trace_mem) {
@@ -671,53 +661,53 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 		  word_sz, (void*)addr, (void*)(addr+size), history);
     }
 
-    tmb = VG_(malloc)("track_mem_write",
+    rp = VG_(malloc)("track_mem_write",
 		      matrix_offset + history * nwords * sizeof(struct mh_mem_access_t));
-    tmb->start = addr;
-    tmb->end = addr + size;
-    tmb->name = name;
-    tmb->birth_time_stamp = mh_logical_time++;
-    tmb->enabled = True;
-    tmb->type = MH_TRACK;
-    tmb->word_sz = word_sz;
-    tmb->nwords = nwords;
-    tmb->history = history;
-    tmb->access_matrix = (struct mh_mem_access_t*) ((char*)tmb + matrix_offset);
-    tl_assert((char*)&tmb->hist_ix_vec[nwords] <= (char*)tmb->access_matrix);
+    rp->start = addr;
+    rp->end = addr + size;
+    rp->name = name;
+    rp->birth_time_stamp = mh_logical_time++;
+    rp->enabled = True;
+    rp->type = MH_TRACK;
+    rp->word_sz = word_sz;
+    rp->nwords = nwords;
+    rp->history = history;
+    rp->access_matrix = (struct mh_mem_access_t*) ((char*)rp + matrix_offset);
+    tl_assert((char*)&rp->hist_ix_vec[nwords] <= (char*)rp->access_matrix);
     for (i = 0; i < nwords; i++) {
-	tmb->hist_ix_vec[i] = 0;
+	rp->hist_ix_vec[i] = 0;
     }
     for (i = 0; i < history*nwords; i++) {
-	tmb->access_matrix[i].call_stack = NULL;
-	tmb->access_matrix[i].time_stamp = 0;
+	rp->access_matrix[i].call_stack = NULL;
+	rp->access_matrix[i].time_stamp = 0;
     }
 
-    insert_nonoverlapping(tmb);
+    insert_nonoverlapping(rp);
 }
 
 static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type type)
 {
     Addr end = addr + size;
-    struct mh_track_mem_block_t* tmb = region_lookup_maxle(addr);
+    struct mh_region_t* rp = region_lookup_maxle(addr);
 
-    tl_assert2(tmb && addr == tmb->start && end == tmb->end,
+    tl_assert2(rp && addr == rp->start && end == rp->end,
 	       "Could not find region to remove [%p -> %p]", addr, end);
-    tl_assert((type & tmb->type) == type);
+    tl_assert((type & rp->type) == type);
 
-    tmb->type &= ~type;
+    rp->type &= ~type;
     if (clo_trace_mem) {
-	if (tmb->type & MH_TRACK) {
+	if (rp->type & MH_TRACK) {
 	    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
-		      tmb->name, (void*)addr, (void*)(addr + size));
+		      rp->name, (void*)addr, (void*)(addr + size));
 	}
-	if (tmb->type & MH_NOWRITE) {
+	if (rp->type & MH_NOWRITE) {
 	    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
-		      tmb->name, (void*)addr, (void*)(addr + size));
+		      rp->name, (void*)addr, (void*)(addr + size));
 	}
     }
-    if (!tmb->type) {
-	region_remove(tmb);
-	VG_(free) (tmb);
+    if (!rp->type) {
+	region_remove(rp);
+	VG_(free) (rp);
     }
 }
 
@@ -729,41 +719,41 @@ static void untrack_mem_write (Addr addr, SizeT size)
 static void track_able(Addr addr, SizeT size, Bool enabled)
 {
     Addr end = addr + size;
-    struct mh_track_mem_block_t* tmb = region_lookup_maxle(addr);
+    struct mh_region_t* rp = region_lookup_maxle(addr);
 
-    tl_assert2(tmb && addr == tmb->start && end == tmb->end,
+    tl_assert2(rp && addr == rp->start && end == rp->end,
 	       "Could not find region to %sable", enabled ? "en":"dis");
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: %sable '%s' from %p to %p\n",
 		  (enabled ? "En" : "Dis"),
-		  tmb->name, (void*)addr, (void*)(addr + size));
+		  rp->name, (void*)addr, (void*)(addr + size));
     }
-    tmb->enabled = enabled;
+    rp->enabled = enabled;
 }
 
 
-static struct mh_track_mem_block_t* new_region(Addr start, Addr end,
+static struct mh_region_t* new_region(Addr start, Addr end,
 					       const char* name,
 					       unsigned flags)
 {
-    struct mh_track_mem_block_t *tmb;
-    tmb = VG_(malloc)("set_mem_readonly", sizeof(struct mh_track_mem_block_t));
-    tmb->start = start;
-    tmb->end = end;
-    tmb->name = name;
-    tmb->birth_time_stamp = mh_logical_time++;
-    tmb->enabled = True;
-    tmb->type = flags;
-    insert_nonoverlapping(tmb);
-    return tmb;
+    struct mh_region_t *rp;
+    rp = VG_(malloc)("set_mem_readonly", sizeof(struct mh_region_t));
+    rp->start = start;
+    rp->end = end;
+    rp->name = name;
+    rp->birth_time_stamp = mh_logical_time++;
+    rp->enabled = True;
+    rp->type = flags;
+    insert_nonoverlapping(rp);
+    return rp;
 }
 
 static void set_mem_flags(Addr start, SizeT size, const char* name,
 			  enum mh_track_type flags)
 {
     Addr end = start + size;
-    struct mh_track_mem_block_t *rp;
+    struct mh_region_t *rp;
     enum { VOID_AT_START, REGION_AT_START } state;
 
     tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
@@ -817,7 +807,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		return;
 	    }
 	    if (rp->type == flags) {
-		struct mh_track_mem_block_t *succ = region_succ(rp);
+		struct mh_region_t *succ = region_succ(rp);
 		if (!succ || succ->start > end) {
 		    rp->end = end;
 		    return;
@@ -851,7 +841,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 {
     Addr end = start + size;
-    struct mh_track_mem_block_t *rp, *pred = NULL;
+    struct mh_region_t *rp, *pred = NULL;
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Clear protection %s from %p to %p\n",
@@ -998,54 +988,54 @@ static void print_word(unsigned word_sz, struct mh_mem_access_t* ap)
 
 static void mh_fini(Int exitcode)
 {
-    struct mh_track_mem_block_t* tmb = region_min();
+    struct mh_region_t* rp = region_min();
 
-    for (tmb = region_min(); tmb; tmb = region_succ(tmb)) {
-      if (tmb->type & MH_TRACK) {
+    for (rp = region_min(); rp; rp = region_succ(rp)) {
+      if (rp->type & MH_TRACK) {
 	unsigned wix = 0; /* word index */
-	Addr addr = tmb->start;
+	Addr addr = rp->start;
 	VG_(umsg) ("Memhist tracking '%s' from %p to %p with word size %u "
-		   "and history %u created at time %u.\n", tmb->name,
-		   (void*)tmb->start, (void*)tmb->end, tmb->word_sz,
-		   tmb->history, tmb->birth_time_stamp);
-	for (addr=tmb->start; addr < tmb->end; wix++, addr += tmb->word_sz) {
+		   "and history %u created at time %u.\n", rp->name,
+		   (void*)rp->start, (void*)rp->end, rp->word_sz,
+		   rp->history, rp->birth_time_stamp);
+	for (addr=rp->start; addr < rp->end; wix++, addr += rp->word_sz) {
 	    unsigned h;
-	    int hist_ix = tmb->hist_ix_vec[wix] - 1;
+	    int hist_ix = rp->hist_ix_vec[wix] - 1;
 
-	    for (h=0; h < tmb->history; h++, hist_ix--) {
+	    for (h=0; h < rp->history; h++, hist_ix--) {
 		struct mh_mem_access_t* ap;
 
 		if (hist_ix < 0)
-		    hist_ix = tmb->history - 1;
+		    hist_ix = rp->history - 1;
 
-		//VG_(umsg)("TRACE: Reading at ix=%u\n", wix*tmb->history + hist_ix);
-		ap = &tmb->access_matrix[wix*tmb->history + hist_ix];
+		//VG_(umsg)("TRACE: Reading at ix=%u\n", wix*rp->history + hist_ix);
+		ap = &rp->access_matrix[wix*rp->history + hist_ix];
 		if (ap->call_stack) {
 		    if (!h) {
-			VG_(umsg)("%u-bytes ", tmb->word_sz);
-			print_word(tmb->word_sz, ap);
+			VG_(umsg)("%u-bytes ", rp->word_sz);
+			print_word(rp->word_sz, ap);
 			VG_(umsg)(" written to address %p at time %u:\n",
 				  (void*)addr, ap->time_stamp);
 		    }
 		    else {
 			VG_(umsg) ("       AND ");
-			print_word(tmb->word_sz, ap);
+			print_word(rp->word_sz, ap);
 			VG_(umsg) (" written at time %u:\n", ap->time_stamp);
 		    }
 		    VG_(pp_ExeContext)(ap->call_stack);
 		}
 		else {
 		    if (!h)
-			VG_(umsg) ("%u-bytes at %p not written.\n", tmb->word_sz, (void*)addr);
+			VG_(umsg) ("%u-bytes at %p not written.\n", rp->word_sz, (void*)addr);
 		    break;
 		}
 	    }
 	}
       }
-      if (tmb->type & MH_NOWRITE) {
+      if (rp->type & MH_NOWRITE) {
 	  VG_(umsg) ("Region '%s' set as %s from %p to %p.\n",
-		     tmb->name, prot_txt(tmb->type),
-		     (void*)tmb->start, (void*)tmb->end);
+		     rp->name, prot_txt(rp->type),
+		     (void*)rp->start, (void*)rp->end);
       }
     }
 }
