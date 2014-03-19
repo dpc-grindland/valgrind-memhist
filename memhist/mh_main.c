@@ -62,30 +62,27 @@ static Bool clo_trace_mem = False;
 
 static Bool mh_process_cmd_line_option(const HChar* arg)
 {
-   if VG_BOOL_CLO(arg, "--trace-mem", clo_trace_mem) {}
-   else
-      return False;
+    if VG_BOOL_CLO(arg, "--trace-mem", clo_trace_mem) {}
+    else return False;
 
-   return True;
+    return True;
 }
 
 static void mh_print_usage(void)
 {
-   VG_(printf)(
-"    --trace-mem=no|yes        trace all stores [no]\n"
-   );
+    VG_(printf)("    --trace-mem=no|yes        trace all stores [no]\n");
 }
 
 static void mh_print_debug_usage(void)
 {
-   VG_(printf)("    (none)\n");
+    VG_(printf)("    (none)\n");
 }
 
 
 #ifdef MH_DEBUG
 static Bool fit_in_ubytes(ULong v, Int nbytes)
 {
-    return nbytes >= sizeof(ULong) || (v >> (nbytes*8)) == 0;
+    return nbytes >= sizeof(ULong) || (v >> (nbytes * 8)) == 0;
 }
 #endif
 
@@ -97,8 +94,7 @@ static Bool fit_in_ubytes(ULong v, Int nbytes)
 #define MAX_DSIZE    512
 
 
-struct mh_mem_access_t
-{
+struct mh_mem_access_t {
     ExeContext* call_stack;
     unsigned time_stamp;
     HWord data;
@@ -112,14 +108,13 @@ enum mh_track_type {
 
 static const char* prot_txt(enum mh_track_type flags)
 {
-    static const char* txt[] = {"NOWRITE", "NOREAD", "NOACCESS" };
+    static const char* txt[] = {"NOWRITE", "NOREAD", "NOACCESS"};
     tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
 
     return txt[(flags & 3) - 1];
 }
 
-struct mh_region_t
-{
+struct mh_region_t {
     rb_tree_node node;
     Addr start;
     Addr end;
@@ -161,8 +156,8 @@ static struct rb_tree region_tree;
 static
 struct mh_region_t* region_insert(struct mh_region_t* rp)
 {
-    return (struct mh_region_t*) rb_tree_insert(&region_tree,
-							 &rp->node);
+    return (struct mh_region_t*)rb_tree_insert(&region_tree,
+					       &rp->node);
 }
 
 static void region_remove(struct mh_region_t* rp)
@@ -173,43 +168,43 @@ static void region_remove(struct mh_region_t* rp)
 static
 struct mh_region_t* region_min(void)
 {
-    return (struct mh_region_t*) rb_tree_min(&region_tree);
+    return (struct mh_region_t*)rb_tree_min(&region_tree);
 }
 
 static
 struct mh_region_t* region_succ(struct mh_region_t* rp)
 {
-    return (struct mh_region_t*) rb_tree_succ(&region_tree,
-						       &rp->node);
+    return (struct mh_region_t*)rb_tree_succ(&region_tree,
+					     &rp->node);
 }
 
 static
 struct mh_region_t* region_pred(struct mh_region_t* rp)
 {
-    return (struct mh_region_t*) rb_tree_pred(&region_tree,
-						       &rp->node);
+    return (struct mh_region_t*)rb_tree_pred(&region_tree,
+					     &rp->node);
 }
 
 static
 struct mh_region_t* region_lookup_maxle(Addr addr)
 {
-    return (struct mh_region_t*) rb_tree_lookup_maxle(&region_tree,
-							       (void*)addr);
+    return (struct mh_region_t*)rb_tree_lookup_maxle(&region_tree,
+						     (void*)addr);
 }
 
 static
 struct mh_region_t* region_lookup_ming(Addr addr)
 {
-    return (struct mh_region_t*) rb_tree_lookup_ming(&region_tree,
-							       (void*)addr);
+    return (struct mh_region_t*)rb_tree_lookup_ming(&region_tree,
+						    (void*)addr);
 }
 
 static void insert_nonoverlapping(struct mh_region_t* rp)
 {
     struct mh_region_t* clash = region_insert(rp);
     tl_assert(!clash);
-    tl_assert(!(clash=region_pred(rp)) || clash->end <= rp->start);
-    tl_assert(!(clash=region_succ(rp)) || clash->start >= rp->end);
+    tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
+    tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
 }
 
 static unsigned mh_logical_time = 0;
@@ -226,11 +221,11 @@ static void track_load(Addr addr, SizeT size)
 }
 */
 
-static void report_store_in_block(struct mh_region_t *rp,
+static void report_store_in_block(struct mh_region_t* rp,
 				  Addr addr, SizeT size, Addr64 data)
 {
     ThreadId tid = VG_(get_running_tid)();  // Should tid be passed as arg instead?
-    ExeContext *ec = VG_(record_ExeContext)(tid, 0);
+    ExeContext* ec = VG_(record_ExeContext)(tid, 0);
     unsigned wix; /* word index */
     unsigned start_wix, end_wix;
     Addr start = addr;
@@ -239,17 +234,16 @@ static void report_store_in_block(struct mh_region_t *rp,
     if (start < rp->start) {
 	union {
 	    Addr64 words[2];
-	    char bytes[2*8];
+	    char bytes[2 * 8];
 	}u;
 	int offs = rp->start - start;
 	u.words[0] = data;
 	u.words[1] = 0;
 	tl_assert(offs < 8);
-	data = *(Addr64*) &u.bytes[offs];    /* BUG: Unaligned word access */
+	data = *(Addr64*)&u.bytes[offs];    /* BUG: Unaligned word access */
 	start = rp->start;
     }
-    if (end > rp->end)
-	end = rp->end;
+    if (end > rp->end) end = rp->end;
 
     start_wix = (start - rp->start) / rp->word_sz;
     end_wix = (end - rp->start - 1) / rp->word_sz + 1;
@@ -258,7 +252,7 @@ static void report_store_in_block(struct mh_region_t *rp,
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: %u bytes written at addr %p at time %u:\n",
-		  (unsigned)size, (void *)addr, mh_logical_time);
+		  (unsigned)size, (void*)addr, mh_logical_time);
 	VG_(pp_ExeContext)(ec);
     }
 
@@ -266,8 +260,7 @@ static void report_store_in_block(struct mh_region_t *rp,
 	int i;
 	unsigned hix = rp->hist_ix_vec[wix]++;
 
-	if (rp->hist_ix_vec[wix] >= rp->history)
-	    rp->hist_ix_vec[wix] = 0;
+	if (rp->hist_ix_vec[wix] >= rp->history) rp->hist_ix_vec[wix] = 0;
 
 	i = (rp->history * wix) + hix;
 	//VG_(umsg)("TRACE: Saving at wix=%u hix=%u -> i=%u\n", wix, hix, i);
@@ -279,11 +272,11 @@ static void report_store_in_block(struct mh_region_t *rp,
     }
 }
 
-static void report_store_in_readonly(struct mh_region_t *rp,
+static void report_store_in_readonly(struct mh_region_t* rp,
 				     Addr addr, SizeT size, Addr64 data)
 {
     VG_(umsg)("Provoking SEGV: %u bytes written to READONLY mem at addr %p at time %u:\n",
-	      (unsigned)size, (void *)addr, mh_logical_time);
+	      (unsigned)size, (void*)addr, mh_logical_time);
 }
 
 #define track_store_REGPARM 2
@@ -293,12 +286,11 @@ static Int track_store(Addr addr, SizeT size, Long data)
 {
     Addr start = addr;
     Addr end = addr + size;
-    struct mh_region_t *rp = region_lookup_maxle(addr);
+    struct mh_region_t* rp = region_lookup_maxle(addr);
     Bool got_a_hit = 0;
     Int crash_it = 0;
 
-    if (!rp || start >= rp->end)
-	return 0;
+    if (!rp || start >= rp->end) return 0;
 
     do {
 	tl_assert(end > rp->start && start < rp->end);
@@ -317,14 +309,12 @@ static Int track_store(Addr addr, SizeT size, Long data)
 	else {
 	    //VG_(umsg)("TRACE: Disabled???\n");
 	}
-	if (end <= rp->end)
-	    break;
+	if (end <= rp->end) break;
 
 	rp = region_succ(rp);
     }while (rp && end > rp->start);
 
-    if (got_a_hit)
-	++mh_logical_time;
+    if (got_a_hit) ++mh_logical_time;
     return crash_it;
 }
 
@@ -340,18 +330,18 @@ static Int track_cas(Addr addr, SizeT size, ULong expected, ULong data)
     case 4: actual = *(UInt*)addr;   break;
     case 8: actual = *(ULong*)addr;  break;
     default:
-	tl_assert2(0,"CAS on %u-words not implemented",size);
+	tl_assert2(0, "CAS on %u-words not implemented", size);
     }
     return (actual == expected) ? track_store(addr, size, data) : 0;
 }
 
 
 #if VEX_HOST_WORDSIZE == 4
-#  define IRConst_HWord IRConst_U32
+    #define IRConst_HWord IRConst_U32
 #elif VEX_HOST_WORDSIZE == 8
-#  define IRConst_HWord IRConst_U64
+    #define IRConst_HWord IRConst_U64
 #else
-#  error "VEX_HOST_WORDSIZE not set to 4 or 8"
+    #error "VEX_HOST_WORDSIZE not set to 4 or 8"
 #endif
 
 
@@ -367,13 +357,13 @@ static IRType size2itype(int size)
 {
     IRType type;
     switch (size) {
-    case 1:  type = Ity_I8;   break;
-    case 2:  type = Ity_I16;  break;
-    case 4:  type = Ity_I32;  break;
-    case 8:  type = Ity_I64;  break;
+    case 1: type = Ity_I8;   break;
+    case 2: type = Ity_I16;  break;
+    case 4: type = Ity_I32;  break;
+    case 8: type = Ity_I64;  break;
     case 16: type = Ity_I128; break;
     default:
-	tl_assert2(0,"Invalid integer size %u", size);
+	tl_assert2(0, "Invalid integer size %u", size);
     }
     return type;
 }
@@ -405,9 +395,9 @@ widen_to_U64(IRSB* sb, IRExpr* iexpr)
 
 
 static
-void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize,
-		  IRExpr* expected, /* if CAS */
-		  IRExpr* data, HWord ip)
+void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
+		 IRExpr* expected, /* if CAS */
+		 IRExpr* data, HWord ip)
 {
     IRTemp retval_tmp, cond_tmp;
     IRExpr* cond_ex;
@@ -431,10 +421,10 @@ void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize,
 
     if (expected) {
 	/*  Emit:
-         *
-         *  if (track_cas(daddr, dsize, expd, data))
-         *      exit(SEGV);
-         */
+	 *
+	 *  if (track_cas(daddr, dsize, expd, data))
+	 *      exit(SEGV);
+	 */
 	fn = track_cas;
 	fn_name = "track_cas";
 	expd64 = widen_to_U64(sb, expected);
@@ -444,10 +434,10 @@ void addEvent_Dw (IRSB* sb, IRExpr* daddr, Int dsize,
     }
     else {
 	/*  Emit:
-         *
-         *  if (track_store(daddr, dsize, data))
-         *      exit(SEGV);
-         */
+	 *
+	 *  if (track_store(daddr, dsize, data))
+	 *      exit(SEGV);
+	 */
 	fn = track_store;
 	fn_name = "track_store";
 	argv = mkIRExprVec_3(daddr, mkIRExpr_HWord(dsize), expr2atom(sb, data64));
@@ -477,105 +467,103 @@ static void mh_post_clo_init(void)
 }
 
 static
-IRSB* mh_instrument ( VgCallbackClosure* closure,
-                      IRSB* sbIn,
-                      VexGuestLayout* layout,
-                      VexGuestExtents* vge,
-		      VexArchInfo* arch,
-                      IRType gWordTy, IRType hWordTy )
+IRSB* mh_instrument(VgCallbackClosure* closure,
+		    IRSB* sbIn,
+		    VexGuestLayout* layout,
+		    VexGuestExtents* vge,
+		    VexArchInfo* arch,
+		    IRType gWordTy, IRType hWordTy)
 {
-   Int        i;
-   IRSB*      sbOut;
-   IRTypeEnv* tyenv = sbIn->tyenv;
-   HWord      currIP = 0;
+    Int        i;
+    IRSB*      sbOut;
+    IRTypeEnv* tyenv = sbIn->tyenv;
+    HWord      currIP = 0;
 
-   if (gWordTy != hWordTy) {
-      /* We don't currently support this case. */
-      VG_(tool_panic)("host/guest word size mismatch");
-   }
+    if (gWordTy != hWordTy) {
+	/* We don't currently support this case. */
+	VG_(tool_panic)("host/guest word size mismatch");
+    }
 
-   /* Set up SB */
-   sbOut = deepCopyIRSBExceptStmts(sbIn);
+    /* Set up SB */
+    sbOut = deepCopyIRSBExceptStmts(sbIn);
 
-   // Copy verbatim any IR preamble preceding the first IMark
-   i = 0;
-   while (i < sbIn->stmts_used && sbIn->stmts[i]->tag != Ist_IMark) {
-      addStmtToIRSB( sbOut, sbIn->stmts[i] );
-      i++;
-   }
+    // Copy verbatim any IR preamble preceding the first IMark
+    i = 0;
+    while (i < sbIn->stmts_used && sbIn->stmts[i]->tag != Ist_IMark) {
+	addStmtToIRSB(sbOut, sbIn->stmts[i]);
+	i++;
+    }
 
-   for (/*use current i*/; i < sbIn->stmts_used; i++) {
-      IRStmt* st = sbIn->stmts[i];
-      if (!st || st->tag == Ist_NoOp) continue;
+    for (/*use current i*/; i < sbIn->stmts_used; i++) {
+	IRStmt* st = sbIn->stmts[i];
+	if (!st || st->tag == Ist_NoOp) continue;
 
-      switch (st->tag) {
-         case Ist_NoOp:
-         case Ist_AbiHint:
-         case Ist_Put:
-         case Ist_PutI:
-         case Ist_MBE:
-            break;
+	switch (st->tag) {
+	case Ist_NoOp:
+	case Ist_AbiHint:
+	case Ist_Put:
+	case Ist_PutI:
+	case Ist_MBE:
+	    break;
 
-         case Ist_IMark:
-            if (clo_track_mem) {
+	case Ist_IMark:
+	    if (clo_track_mem) {
 		addEvent_Ir(sbOut, mkIRExpr_HWord((HWord)st->Ist.IMark.addr),
 			    st->Ist.IMark.len);
-            }
+	    }
 	    /* Remember pointer to current hw instruction */
 	    currIP = (HWord)st->Ist.IMark.addr;
-            break;
+	    break;
 
-         case Ist_WrTmp:
-            if (clo_track_mem) {
-               IRExpr* data = st->Ist.WrTmp.data;
-               if (data->tag == Iex_Load) {
-                  addEvent_Dr(sbOut, data->Iex.Load.addr,
-			      sizeofIRType(data->Iex.Load.ty) );
-               }
-            }
-            break;
+	case Ist_WrTmp:
+	    if (clo_track_mem) {
+		IRExpr* data = st->Ist.WrTmp.data;
+		if (data->tag == Iex_Load) {
+		    addEvent_Dr(sbOut, data->Iex.Load.addr,
+				sizeofIRType(data->Iex.Load.ty));
+		}
+	    }
+	    break;
 
-         case Ist_Store:
-            if (clo_track_mem) {
-               IRExpr* data  = st->Ist.Store.data;
-               addEvent_Dw( sbOut, st->Ist.Store.addr,
-                            sizeofIRType(typeOfIRExpr(tyenv, data)),
+	case Ist_Store:
+	    if (clo_track_mem) {
+		IRExpr* data  = st->Ist.Store.data;
+		addEvent_Dw(sbOut, st->Ist.Store.addr,
+			    sizeofIRType(typeOfIRExpr(tyenv, data)),
 			    NULL,
 			    data,
 			    currIP);
-            }
-            break;
+	    }
+	    break;
 
-        case Ist_StoreG:
+	case Ist_StoreG:
 	    tl_assert(!"Tell Sverker he forgot to implement Ist_StoreGTo.");
 	    break;
 
-        case Ist_LoadG:
+	case Ist_LoadG:
 	    tl_assert(!"Tell Sverker he forgot to implement Ist_LoadG.");
 	    break;
 
-         case Ist_Dirty: {
-            if (clo_track_mem) {
-               Int      dsize;
-               IRDirty* d = st->Ist.Dirty.details;
-               if (d->mFx != Ifx_None) {
-                  // This dirty helper accesses memory.  Collect the details.
-                  tl_assert(d->mAddr != NULL);
-                  tl_assert(d->mSize != 0);
-                  dsize = d->mSize;
-                  if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify)
-                     addEvent_Dr( sbOut, d->mAddr, dsize );
-                  if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify)
-                     addEvent_Dw( sbOut, d->mAddr, dsize, NULL, NULL, currIP);
-               } else {
-                  tl_assert(d->mAddr == NULL);
-                  tl_assert(d->mSize == 0);
-               }
-            }
-            break;
-         }
+	case Ist_Dirty:
+	    if (clo_track_mem) {
+		Int      dsize;
+		IRDirty* d = st->Ist.Dirty.details;
+		if (d->mFx != Ifx_None) {
+		    // This dirty helper accesses memory.  Collect the details.
+		    tl_assert(d->mAddr != NULL);
+		    tl_assert(d->mSize != 0);
+		    dsize = d->mSize;
+		    if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify) addEvent_Dr(sbOut, d->mAddr, dsize);
+		    if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify) addEvent_Dw(sbOut, d->mAddr, dsize, NULL, NULL, currIP);
+		}
+		else {
+		    tl_assert(d->mAddr == NULL);
+		    tl_assert(d->mSize == 0);
+		}
+	    }
+	    break;
 
-         case Ist_CAS: {
+	case Ist_CAS:
 	    if (clo_track_mem) {
 		Int    dataSize;
 		IRCAS*  cas = st->Ist.CAS.details;
@@ -589,11 +577,14 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
 		    IROp mergeOp;
 		    dataSize *= 2;
 		    switch (dataSize) {
-		    case  2: mergeOp = Iop_8HLto16;   break;
-		    case  4: mergeOp = Iop_16HLto32;  break;
-		    case  8: mergeOp = Iop_32HLto64;  break;
+		    case  2:
+			mergeOp = Iop_8HLto16;   break;
+		    case  4:
+			mergeOp = Iop_16HLto32;  break;
+		    case  8:
+			mergeOp = Iop_32HLto64;  break;
 		    default:
-			tl_assert2(0,"doubleword CAS instruction with size %u not implemented", dataSize);
+			tl_assert2(0, "doubleword CAS instruction with size %u not implemented", dataSize);
 		    }
 		    data = IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
 		    expd = IRExpr_Binop(mergeOp, cas->expdHi, cas->expdLo);
@@ -602,42 +593,41 @@ IRSB* mh_instrument ( VgCallbackClosure* closure,
 		addEvent_Dw(sbOut, cas->addr, dataSize, expd, data, currIP);
 	    }
 	    break;
-         }
 
-         case Ist_LLSC: {
-            IRType dataTy;
-            if (st->Ist.LLSC.storedata == NULL) {
-               /* LL */
-               dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
-               if (clo_track_mem)
-                  addEvent_Dr( sbOut, st->Ist.LLSC.addr,
-                                      sizeofIRType(dataTy) );
-            } else {
-               /* SC */
-               dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
-               if (clo_track_mem) {
-		  /* Todo:
-		   * Do real *conditional* store as we do for CAS above
-		   * This is trickier to do as we don't know until *after* the
-		   * original LLSC instruction if the store really happened.
-		   */
-                  addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
-			      NULL, st->Ist.LLSC.storedata, currIP);
-	       }
-            }
-            break;
-         }
+	case Ist_LLSC: {
+	    IRType dataTy;
+	    if (st->Ist.LLSC.storedata == NULL) {
+		/* LL */
+		dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
+		if (clo_track_mem) addEvent_Dr(sbOut, st->Ist.LLSC.addr,
+					       sizeofIRType(dataTy));
+	    }
+	    else {
+		/* SC */
+		dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
+		if (clo_track_mem) {
+		    /* Todo:
+		     * Do real *conditional* store as we do for CAS above
+		     * This is trickier to do as we don't know until *after* the
+		     * original LLSC instruction if the store really happened.
+		     */
+		    addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
+				NULL, st->Ist.LLSC.storedata, currIP);
+		}
+	    }
+	    break;
+	}
 
-         case Ist_Exit:
-            break;
+	case Ist_Exit:
+	    break;
 
-         default:
-            tl_assert(0);
-      }
-      addStmtToIRSB(sbOut, st);      // Original statement
-   }
+	default:
+	    tl_assert(0);
+	}
+	addStmtToIRSB(sbOut, st);      // Original statement
+    }
 
-   return sbOut;
+    return sbOut;
 }
 
 static unsigned align_up(unsigned unit, unsigned value)
@@ -648,7 +638,7 @@ static unsigned align_up(unsigned unit, unsigned value)
 static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned history,
 			    const char* name)
 {
-    struct mh_region_t *rp;
+    struct mh_region_t* rp;
     const unsigned nwords = (size + word_sz - 1) / word_sz;
     const unsigned sizeof_hist_ix_vec = nwords * sizeof(*rp->hist_ix_vec);
     unsigned i;
@@ -658,11 +648,11 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Tracking %u-words from %p to %p with history %u\n",
-		  word_sz, (void*)addr, (void*)(addr+size), history);
+		  word_sz, (void*)addr, (void*)(addr + size), history);
     }
 
     rp = VG_(malloc)("track_mem_write",
-		      matrix_offset + history * nwords * sizeof(struct mh_mem_access_t));
+		     matrix_offset + history * nwords * sizeof(struct mh_mem_access_t));
     rp->start = addr;
     rp->end = addr + size;
     rp->name = name;
@@ -672,12 +662,12 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     rp->word_sz = word_sz;
     rp->nwords = nwords;
     rp->history = history;
-    rp->access_matrix = (struct mh_mem_access_t*) ((char*)rp + matrix_offset);
+    rp->access_matrix = (struct mh_mem_access_t*)((char*)rp + matrix_offset);
     tl_assert((char*)&rp->hist_ix_vec[nwords] <= (char*)rp->access_matrix);
     for (i = 0; i < nwords; i++) {
 	rp->hist_ix_vec[i] = 0;
     }
-    for (i = 0; i < history*nwords; i++) {
+    for (i = 0; i < history * nwords; i++) {
 	rp->access_matrix[i].call_stack = NULL;
 	rp->access_matrix[i].time_stamp = 0;
     }
@@ -707,11 +697,11 @@ static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type typ
     }
     if (!rp->type) {
 	region_remove(rp);
-	VG_(free) (rp);
+	VG_(free)(rp);
     }
 }
 
-static void untrack_mem_write (Addr addr, SizeT size)
+static void untrack_mem_write(Addr addr, SizeT size)
 {
     remove_track_mem_block(addr, size, MH_TRACK);
 }
@@ -722,7 +712,7 @@ static void track_able(Addr addr, SizeT size, Bool enabled)
     struct mh_region_t* rp = region_lookup_maxle(addr);
 
     tl_assert2(rp && addr == rp->start && end == rp->end,
-	       "Could not find region to %sable", enabled ? "en":"dis");
+	       "Could not find region to %sable", enabled ? "en" : "dis");
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: %sable '%s' from %p to %p\n",
@@ -734,10 +724,10 @@ static void track_able(Addr addr, SizeT size, Bool enabled)
 
 
 static struct mh_region_t* new_region(Addr start, Addr end,
-					       const char* name,
-					       unsigned flags)
+				      const char* name,
+				      unsigned flags)
 {
-    struct mh_region_t *rp;
+    struct mh_region_t* rp;
     rp = VG_(malloc)("set_mem_readonly", sizeof(struct mh_region_t));
     rp->start = start;
     rp->end = end;
@@ -753,8 +743,8 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 			  enum mh_track_type flags)
 {
     Addr end = start + size;
-    struct mh_region_t *rp;
-    enum { VOID_AT_START, REGION_AT_START } state;
+    struct mh_region_t* rp;
+    enum {VOID_AT_START, REGION_AT_START } state;
 
     tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
     tl_assert(!(flags & MH_TRACK));
@@ -767,8 +757,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
     rp = region_lookup_maxle(start);
     if (rp) {
 	if (rp->end < start
-	    || (rp->end == start && rp->type != flags))
-	{
+	    || (rp->end == start && rp->type != flags)) {
 	    state = VOID_AT_START;
 	    rp = region_succ(rp);
 	}
@@ -807,7 +796,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		return;
 	    }
 	    if (rp->type == flags) {
-		struct mh_region_t *succ = region_succ(rp);
+		struct mh_region_t* succ = region_succ(rp);
 		if (!succ || succ->start > end) {
 		    rp->end = end;
 		    return;
@@ -827,8 +816,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 	    }
 	    else {
 		rp->type |= flags;
-		if (rp->end == end)
-		    return;
+		if (rp->end == end) return;
 		start = rp->end;
 		rp = region_succ(rp);
 		state = (!rp || rp->start > start) ? VOID_AT_START : REGION_AT_START;
@@ -841,7 +829,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 {
     Addr end = start + size;
-    struct mh_region_t *rp, *pred = NULL;
+    struct mh_region_t* rp, * pred = NULL;
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Clear protection %s from %p to %p\n",
@@ -902,8 +890,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 	    }
 	}
 	if (pred && pred->end == rp->start
-	    && pred->type == rp->type && !(rp->type & MH_TRACK))
-	{ /* merge regions */
+	    && pred->type == rp->type && !(rp->type & MH_TRACK)) { /* merge regions */
 	    Addr pred_start = pred->start;
 	    region_remove(pred);
 	    rp->start = pred_start;
@@ -918,52 +905,52 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 /*--- Client requests                                      ---*/
 /*------------------------------------------------------------*/
 
-static Bool mh_handle_client_request ( ThreadId tid, UWord* arg, UWord* ret )
+static Bool mh_handle_client_request(ThreadId tid, UWord* arg, UWord* ret)
 {
-   if (!VG_IS_TOOL_USERREQ('M','H',arg[0])) {
-      return False;
-   }
+    if (!VG_IS_TOOL_USERREQ('M', 'H', arg[0])) {
+	return False;
+    }
 
-   switch (arg[0]) {
-      case VG_USERREQ__TRACK_MEM_WRITE:
-	  track_mem_write (arg[1], arg[2], arg[3], arg[4], (char*)arg[5]);
-         *ret = -1;
-         break;
-      case VG_USERREQ__UNTRACK_MEM_WRITE:
-         untrack_mem_write (arg[1], arg[2]);
-         *ret = -1;
-         break;
+    switch (arg[0]) {
+    case VG_USERREQ__TRACK_MEM_WRITE:
+	track_mem_write(arg[1], arg[2], arg[3], arg[4], (char*)arg[5]);
+	*ret = -1;
+	break;
+    case VG_USERREQ__UNTRACK_MEM_WRITE:
+	untrack_mem_write(arg[1], arg[2]);
+	*ret = -1;
+	break;
 
-      case VG_USERREQ__TRACK_ENABLE:
-	  track_able (arg[1], arg[2], 1);
-	  *ret = -1;
-	  break;
+    case VG_USERREQ__TRACK_ENABLE:
+	track_able(arg[1], arg[2], 1);
+	*ret = -1;
+	break;
 
-      case VG_USERREQ__TRACK_DISABLE:
-	  track_able (arg[1], arg[2], 0);
-	  *ret = -1;
-	  break;
+    case VG_USERREQ__TRACK_DISABLE:
+	track_able(arg[1], arg[2], 0);
+	*ret = -1;
+	break;
 
-      case VG_USERREQ__SET_PROTECTION:
-	 set_mem_flags(arg[1], arg[2], (char*)arg[3],
-		       (enum mh_track_type) arg[4]);
-	 *ret = -1;
-	 break;
+    case VG_USERREQ__SET_PROTECTION:
+	set_mem_flags(arg[1], arg[2], (char*)arg[3],
+		      (enum mh_track_type)arg[4]);
+	*ret = -1;
+	break;
 
-      case VG_USERREQ__CLEAR_PROTECTION:
-	  clear_mem_flags(arg[1], arg[2], (enum mh_track_type) arg[3]);
-	  *ret = -1;
-	  break;
+    case VG_USERREQ__CLEAR_PROTECTION:
+	clear_mem_flags(arg[1], arg[2], (enum mh_track_type)arg[3]);
+	*ret = -1;
+	break;
 
-      default:
-         VG_(message)(
-            Vg_UserMsg,
-            "Warning: unknown memcheck client request code %llx\n",
-            (ULong)arg[0]
-         );
-         return False;
-   }
-   return True;
+    default:
+	VG_(message)(
+	    Vg_UserMsg,
+	    "Warning: unknown memcheck client request code %llx\n",
+	    (ULong)arg[0]
+	    );
+	return False;
+    }
+    return True;
 }
 
 
@@ -972,7 +959,8 @@ static void print_word(unsigned word_sz, struct mh_mem_access_t* ap)
     switch (word_sz) {
 #if VEX_HOST_WORDSIZE == 8
     case sizeof(HWord):
-	VG_(umsg)("%p", (void*)ap->data); break;
+	VG_(umsg)("%p", (void*)ap->data);
+	break;
 #endif
     case sizeof(int):
 	VG_(umsg)("%#x", (int)ap->data); break;
@@ -991,52 +979,50 @@ static void mh_fini(Int exitcode)
     struct mh_region_t* rp = region_min();
 
     for (rp = region_min(); rp; rp = region_succ(rp)) {
-      if (rp->type & MH_TRACK) {
-	unsigned wix = 0; /* word index */
-	Addr addr = rp->start;
-	VG_(umsg) ("Memhist tracking '%s' from %p to %p with word size %u "
-		   "and history %u created at time %u.\n", rp->name,
-		   (void*)rp->start, (void*)rp->end, rp->word_sz,
-		   rp->history, rp->birth_time_stamp);
-	for (addr=rp->start; addr < rp->end; wix++, addr += rp->word_sz) {
-	    unsigned h;
-	    int hist_ix = rp->hist_ix_vec[wix] - 1;
+	if (rp->type & MH_TRACK) {
+	    unsigned wix = 0; /* word index */
+	    Addr addr = rp->start;
+	    VG_(umsg)("Memhist tracking '%s' from %p to %p with word size %u "
+		      "and history %u created at time %u.\n", rp->name,
+		      (void*)rp->start, (void*)rp->end, rp->word_sz,
+		      rp->history, rp->birth_time_stamp);
+	    for (addr = rp->start; addr < rp->end; wix++, addr += rp->word_sz) {
+		unsigned h;
+		int hist_ix = rp->hist_ix_vec[wix] - 1;
 
-	    for (h=0; h < rp->history; h++, hist_ix--) {
-		struct mh_mem_access_t* ap;
+		for (h = 0; h < rp->history; h++, hist_ix--) {
+		    struct mh_mem_access_t* ap;
 
-		if (hist_ix < 0)
-		    hist_ix = rp->history - 1;
+		    if (hist_ix < 0) hist_ix = rp->history - 1;
 
-		//VG_(umsg)("TRACE: Reading at ix=%u\n", wix*rp->history + hist_ix);
-		ap = &rp->access_matrix[wix*rp->history + hist_ix];
-		if (ap->call_stack) {
-		    if (!h) {
-			VG_(umsg)("%u-bytes ", rp->word_sz);
-			print_word(rp->word_sz, ap);
-			VG_(umsg)(" written to address %p at time %u:\n",
-				  (void*)addr, ap->time_stamp);
+		    //VG_(umsg)("TRACE: Reading at ix=%u\n", wix*rp->history + hist_ix);
+		    ap = &rp->access_matrix[wix * rp->history + hist_ix];
+		    if (ap->call_stack) {
+			if (!h) {
+			    VG_(umsg)("%u-bytes ", rp->word_sz);
+			    print_word(rp->word_sz, ap);
+			    VG_(umsg)(" written to address %p at time %u:\n",
+				      (void*)addr, ap->time_stamp);
+			}
+			else {
+			    VG_(umsg)("       AND ");
+			    print_word(rp->word_sz, ap);
+			    VG_(umsg)(" written at time %u:\n", ap->time_stamp);
+			}
+			VG_(pp_ExeContext)(ap->call_stack);
 		    }
 		    else {
-			VG_(umsg) ("       AND ");
-			print_word(rp->word_sz, ap);
-			VG_(umsg) (" written at time %u:\n", ap->time_stamp);
+			if (!h) VG_(umsg)("%u-bytes at %p not written.\n", rp->word_sz, (void*)addr);
+			break;
 		    }
-		    VG_(pp_ExeContext)(ap->call_stack);
-		}
-		else {
-		    if (!h)
-			VG_(umsg) ("%u-bytes at %p not written.\n", rp->word_sz, (void*)addr);
-		    break;
 		}
 	    }
 	}
-      }
-      if (rp->type & MH_NOWRITE) {
-	  VG_(umsg) ("Region '%s' set as %s from %p to %p.\n",
-		     rp->name, prot_txt(rp->type),
-		     (void*)rp->start, (void*)rp->end);
-      }
+	if (rp->type & MH_NOWRITE) {
+	    VG_(umsg)("Region '%s' set as %s from %p to %p.\n",
+		      rp->name, prot_txt(rp->type),
+		      (void*)rp->start, (void*)rp->end);
+	}
     }
 }
 
@@ -1044,21 +1030,21 @@ static void mh_pre_clo_init(void)
 {
     rb_tree_init(&region_tree, region_cmp, region_cmp_key, region_print);
 
-   VG_(details_name)            ("Memhist");
-   VG_(details_version)         (NULL);
-   VG_(details_description)     ("Sverker's Valgrind tool for tracking memory access history");
-   VG_(details_copyright_author)(
-      "Copyright (C) 2014, and GNU GPL'd, by Sverker Eriksson.");
-   VG_(details_bug_reports_to)  (VG_BUGS_TO);
-   VG_(details_avg_translation_sizeB) ( 200 );
+    VG_(details_name)("Memhist");
+    VG_(details_version)(NULL);
+    VG_(details_description)("Sverker's Valgrind tool for tracking memory access history");
+    VG_(details_copyright_author)(
+	"Copyright (C) 2014, and GNU GPL'd, by Sverker Eriksson.");
+    VG_(details_bug_reports_to)(VG_BUGS_TO);
+    VG_(details_avg_translation_sizeB)(200);
 
-   VG_(basic_tool_funcs)          (mh_post_clo_init,
-                                   mh_instrument,
-                                   mh_fini);
-   VG_(needs_command_line_options)(mh_process_cmd_line_option,
-                                   mh_print_usage,
-                                   mh_print_debug_usage);
-   VG_(needs_client_requests)     (mh_handle_client_request);
+    VG_(basic_tool_funcs)(mh_post_clo_init,
+			  mh_instrument,
+			  mh_fini);
+    VG_(needs_command_line_options)(mh_process_cmd_line_option,
+				    mh_print_usage,
+				    mh_print_debug_usage);
+    VG_(needs_client_requests)(mh_handle_client_request);
 }
 
 VG_DETERMINE_INTERFACE_VERSION(mh_pre_clo_init)
