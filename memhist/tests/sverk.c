@@ -67,7 +67,8 @@ int foo()
 
   //bar(&vec[7], NULL);
 
-  VALGRIND_SET_PROTECTION(vec, sizeof(vec), "vec", VG_MEM_NOWRITE);
+  VALGRIND_SET_PROTECTION(vec, sizeof(vec), "vec", VG_MEM_NOREAD);
+  VALGRIND_SET_PROTECTION(&bar, 1, "bar", VG_MEM_NOEXE);
 
   bar(&vec[3], __LINE__);
   bar(&vec[3], __LINE__);

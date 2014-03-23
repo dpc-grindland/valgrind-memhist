@@ -45,6 +45,7 @@ typedef
 
 #define VG_MEM_NOWRITE 1
 #define VG_MEM_NOREAD 2
+#define VG_MEM_NOEXE 4
 
 #define VALGRIND_SET_PROTECTION(_qzz_addr,_qzz_len, _qzz_name, _qzz_prot)	\
     VALGRIND_DO_CLIENT_REQUEST_EXPR(0 /* default return */,     \
