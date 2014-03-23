@@ -393,20 +393,33 @@ widen_to_U64(IRSB* sb, IRExpr* iexpr)
     return NULL;
 }
 
+static void emit_track_call(IRSB* sb, HWord ip,
+			    void* fn, const char* fn_name, IRExpr** argv)
+{
+    IRExpr* cond_ex;
+    IRTemp cond_tmp;
+    IRTemp retval_tmp = newIRTemp(sb->tyenv, Ity_I32);
+    IRDirty* di = unsafeIRDirty_1_N(retval_tmp,
+				    track_store_REGPARM,
+				    fn_name,
+				    VG_(fnptr_to_fnentry)(fn),
+				    argv);
+    addStmtToIRSB(sb, IRStmt_Dirty(di));
+    cond_ex = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval_tmp));
+    cond_tmp = newIRTemp(sb->tyenv, Ity_I1);
+    addStmtToIRSB(sb, IRStmt_WrTmp(cond_tmp, cond_ex));
+    addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(cond_tmp), Ijk_SigSEGV,
+				  IRConst_HWord(ip), sb->offsIP));
+}
 
 static
 void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
 		 IRExpr* expected, /* if CAS */
 		 IRExpr* data, HWord ip)
 {
-    IRTemp retval_tmp, cond_tmp;
-    IRExpr* cond_ex;
     IRExpr**   argv;
-    IRDirty*   di;
     IRExpr*    data64 = NULL;
     IRExpr*    expd64;
-    void* fn;
-    const char* fn_name;
 
     tl_assert(clo_track_mem);
     tl_assert(isIRAtom(daddr));
@@ -425,12 +438,11 @@ void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
 	 *  if (track_cas(daddr, dsize, expd, data))
 	 *      exit(SEGV);
 	 */
-	fn = track_cas;
-	fn_name = "track_cas";
 	expd64 = widen_to_U64(sb, expected);
 	tl_assert(expd64 != NULL);
 	argv = mkIRExprVec_4(daddr, mkIRExpr_HWord(dsize),
 			     expr2atom(sb, expd64), expr2atom(sb, data64));
+	emit_track_call(sb, ip, track_cas, "track_cas", argv);
     }
     else {
 	/*  Emit:
@@ -438,23 +450,9 @@ void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
 	 *  if (track_store(daddr, dsize, data))
 	 *      exit(SEGV);
 	 */
-	fn = track_store;
-	fn_name = "track_store";
 	argv = mkIRExprVec_3(daddr, mkIRExpr_HWord(dsize), expr2atom(sb, data64));
+	emit_track_call(sb, ip, track_store, "track_store", argv);
     }
-
-    retval_tmp = newIRTemp(sb->tyenv, Ity_I32);
-    di = unsafeIRDirty_1_N(retval_tmp,
-			   track_store_REGPARM,
-			   fn_name,
-			   VG_(fnptr_to_fnentry)(fn),
-			   argv);
-    addStmtToIRSB(sb, IRStmt_Dirty(di));
-    cond_ex = IRExpr_Unop(Iop_32to1, IRExpr_RdTmp(retval_tmp));
-    cond_tmp = newIRTemp(sb->tyenv, Ity_I1);
-    addStmtToIRSB(sb, IRStmt_WrTmp(cond_tmp, cond_ex));
-    addStmtToIRSB(sb, IRStmt_Exit(IRExpr_RdTmp(cond_tmp), Ijk_SigSEGV,
-				  IRConst_HWord(ip), sb->offsIP));
 }
 
 
