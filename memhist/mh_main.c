@@ -101,15 +101,15 @@ struct mh_mem_access_t {
 };
 
 enum mh_track_type {
-    MH_NOWRITE  = 1,
-    MH_NOREAD   = 2,
-    MH_TRACK    = 4
+    MH_WRITE  = 1,
+    MH_READ   = 2,
+    MH_TRACK  = 4
 };
 
 static const char* prot_txt(enum mh_track_type flags)
 {
     static const char* txt[] = {"NOWRITE", "NOREAD", "NOACCESS"};
-    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+    tl_assert(flags & (MH_WRITE | MH_READ));
 
     return txt[(flags & 3) - 1];
 }
@@ -272,23 +272,17 @@ static void report_store_in_block(struct mh_region_t* rp,
     }
 }
 
-static void report_store_in_readonly(struct mh_region_t* rp,
-				     Addr addr, SizeT size, Addr64 data)
-{
-    VG_(umsg)("Provoking SEGV: %u bytes written to READONLY mem at addr %p at time %u:\n",
-	      (unsigned)size, (void*)addr, mh_logical_time);
-}
 
 #define track_store_REGPARM 2
 
 VG_REGPARM(track_store_REGPARM)
-static Int track_store(Addr addr, SizeT size, Long data)
+static Int track_mem_access(Addr addr, SizeT size, Long data,
+			    enum mh_track_type type)
 {
     Addr start = addr;
     Addr end = addr + size;
     struct mh_region_t* rp = region_lookup_maxle(addr);
     Bool got_a_hit = 0;
-    Int crash_it = 0;
 
     if (!rp || start >= rp->end) return 0;
 
@@ -296,18 +290,34 @@ static Int track_store(Addr addr, SizeT size, Long data)
 	tl_assert(end > rp->start && start < rp->end);
 
 	if (rp->enabled) {
-	    if (rp->type & MH_NOWRITE) {
-		report_store_in_readonly(rp, addr, size, data);
-		crash_it = 1;
+	    switch (type) {
+	    case MH_WRITE:
+		if (rp->type & MH_WRITE) {
+		    VG_(umsg)("Provoking SEGV: %u bytes WRITTEN to protected "
+			      "region '%s' at addr %p at time %u:\n",
+			      (unsigned)size, rp->name, (void*)addr,
+			      mh_logical_time);
+		    return 1; /* Crash! */
+		}
+		if (rp->type & MH_TRACK) {
+		    report_store_in_block(rp, addr, size, data);
+		}
 		break;
-	    }
-	    if (rp->type & MH_TRACK) {
-		report_store_in_block(rp, addr, size, data);
+
+	    case MH_READ:
+		if (rp->type & MH_READ) {
+		    VG_(umsg)("Provoking SEGV: %u bytes READ from protected "
+			      "region '%s' at addr %p at time %u:\n",
+			      (unsigned)size, rp->name, (void*)addr,
+			      mh_logical_time);
+		    return 1; /* Crash! */
+		}
+		break;
+
+	    default:
+		tl_assert2(0, "Invalid mem access type %x", type);
 	    }
 	    got_a_hit = 1;
-	}
-	else {
-	    //VG_(umsg)("TRACE: Disabled???\n");
 	}
 	if (end <= rp->end) break;
 
@@ -315,7 +325,18 @@ static Int track_store(Addr addr, SizeT size, Long data)
     }while (rp && end > rp->start);
 
     if (got_a_hit) ++mh_logical_time;
-    return crash_it;
+
+    return 0; /* Ok */
+}
+
+static Int track_store(Addr addr, SizeT size, Long data)
+{
+    return track_mem_access(addr, size, data, MH_WRITE);
+}
+
+static Int track_load(Addr addr, SizeT size)
+{
+    return track_mem_access(addr, size, 0, MH_READ);
 }
 
 VG_REGPARM(track_store_REGPARM)
@@ -344,14 +365,6 @@ static Int track_cas(Addr addr, SizeT size, ULong expected, ULong data)
     #error "VEX_HOST_WORDSIZE not set to 4 or 8"
 #endif
 
-
-static void addEvent_Ir(IRSB* sb, IRExpr* iaddr, UInt isize)
-{
-}
-
-static void addEvent_Dr(IRSB* sb, IRExpr* daddr, Int dsize)
-{
-}
 
 static IRType size2itype(int size)
 {
@@ -455,6 +468,27 @@ void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
     }
 }
 
+static void addEvent_Dr(IRSB* sb, IRExpr* daddr, Int dsize, HWord ip)
+{
+    IRExpr**   argv;
+
+    tl_assert(clo_track_mem);
+    tl_assert(isIRAtom(daddr));
+    tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
+
+    /*  Emit:
+     *
+     *  if (track_load(daddr, dsize))
+     *      exit(SEGV);
+     */
+    argv = mkIRExprVec_2(daddr, mkIRExpr_HWord(dsize));
+    emit_track_call(sb, ip, track_load, "track_load", argv);
+}
+
+static void addEvent_Ir(IRSB* sb, IRExpr* iaddr, UInt isize)
+{
+}
+
 
 /*------------------------------------------------------------*/
 /*--- Basic tool functions                                 ---*/
@@ -518,7 +552,7 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 		IRExpr* data = st->Ist.WrTmp.data;
 		if (data->tag == Iex_Load) {
 		    addEvent_Dr(sbOut, data->Iex.Load.addr,
-				sizeofIRType(data->Iex.Load.ty));
+				sizeofIRType(data->Iex.Load.ty), currIP);
 		}
 	    }
 	    break;
@@ -551,7 +585,7 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 		    tl_assert(d->mAddr != NULL);
 		    tl_assert(d->mSize != 0);
 		    dsize = d->mSize;
-		    if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify) addEvent_Dr(sbOut, d->mAddr, dsize);
+		    if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify) addEvent_Dr(sbOut, d->mAddr, dsize, currIP);
 		    if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify) addEvent_Dw(sbOut, d->mAddr, dsize, NULL, NULL, currIP);
 		}
 		else {
@@ -587,7 +621,7 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 		    data = IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
 		    expd = IRExpr_Binop(mergeOp, cas->expdHi, cas->expdLo);
 		}
-		addEvent_Dr(sbOut, cas->addr, dataSize);
+		addEvent_Dr(sbOut, cas->addr, dataSize, currIP);
 		addEvent_Dw(sbOut, cas->addr, dataSize, expd, data, currIP);
 	    }
 	    break;
@@ -598,7 +632,7 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 		/* LL */
 		dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
 		if (clo_track_mem) addEvent_Dr(sbOut, st->Ist.LLSC.addr,
-					       sizeofIRType(dataTy));
+					       sizeofIRType(dataTy), currIP);
 	    }
 	    else {
 		/* SC */
@@ -688,7 +722,7 @@ static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type typ
 	    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
 		      rp->name, (void*)addr, (void*)(addr + size));
 	}
-	if (rp->type & MH_NOWRITE) {
+	if (rp->type & MH_WRITE) {
 	    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
 		      rp->name, (void*)addr, (void*)(addr + size));
 	}
@@ -744,7 +778,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
     struct mh_region_t* rp;
     enum {VOID_AT_START, REGION_AT_START } state;
 
-    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+    tl_assert(flags & (MH_WRITE | MH_READ));
     tl_assert(!(flags & MH_TRACK));
 
     if (clo_trace_mem) {
@@ -833,7 +867,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 	VG_(umsg)("TRACE: Clear protection %s from %p to %p\n",
 		  prot_txt(flags), (void*)start, (void*)end);
     }
-    tl_assert(flags & (MH_NOWRITE | MH_NOREAD));
+    tl_assert(flags & (MH_WRITE | MH_READ));
     tl_assert(!(flags & MH_TRACK));
 
     rp = region_lookup_maxle(start);
@@ -1016,7 +1050,7 @@ static void mh_fini(Int exitcode)
 		}
 	    }
 	}
-	if (rp->type & MH_NOWRITE) {
+	if (rp->type & MH_WRITE) {
 	    VG_(umsg)("Region '%s' set as %s from %p to %p.\n",
 		      rp->name, prot_txt(rp->type),
 		      (void*)rp->start, (void*)rp->end);
