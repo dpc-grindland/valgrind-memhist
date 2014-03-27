@@ -57,12 +57,41 @@
 /*------------------------------------------------------------*/
 
 /* Command line options controlling instrumentation kinds */
-static Bool clo_track_mem = True;
 static Bool clo_trace_mem = False;
+
+enum mh_track_type {
+    MH_WRITE  = 1,   /* Data store */
+    MH_READ   = 2,   /* Data load */
+    MH_EXE    = 4,   /* Instruction execution */
+    MH_TRACK  = 8
+};
+
+enum mh_track_type enabled_tracking = MH_WRITE | MH_READ;
 
 static Bool mh_process_cmd_line_option(const HChar* arg)
 {
+    const HChar* prot_str;
     if VG_BOOL_CLO(arg, "--trace-mem", clo_trace_mem) {}
+    else if (VG_STR_CLO(arg, "--enable-tracking", prot_str)) {
+	enabled_tracking = 0;
+	while (*prot_str) {
+	    switch (*prot_str) {
+	    case 'w': case 'W':
+		enabled_tracking |= MH_WRITE;
+		break;
+	    case 'r': case 'R':
+		enabled_tracking |= MH_READ;
+		break;
+	    case 'x': case 'X':
+		enabled_tracking |= MH_EXE;
+		break;
+	    default:
+		VG_(fmsg_bad_option)(arg, "Invalid tracking type '%c'"
+				  " (should be 'W', 'R' or 'X')\n", *prot_str);
+	    }
+	    ++prot_str;
+	}
+    }
     else return False;
 
     return True;
@@ -70,7 +99,8 @@ static Bool mh_process_cmd_line_option(const HChar* arg)
 
 static void mh_print_usage(void)
 {
-    VG_(printf)("    --trace-mem=no|yes        trace all stores [no]\n");
+    VG_(printf)("    --trace-mem=no|yes         trace all stores [no]\n");
+    VG_(printf)("    --enable-tracking=[RWX]*   enable tracking of all Reads, Writes and/or eXecution [RW]\n");
 }
 
 static void mh_print_debug_usage(void)
@@ -100,12 +130,6 @@ struct mh_mem_access_t {
     HWord data;
 };
 
-enum mh_track_type {
-    MH_WRITE  = 1,   /* Data store */
-    MH_READ   = 2,   /* Data load */
-    MH_EXE    = 4,   /* Instruction execution */
-    MH_TRACK  = 8
-};
 
 static const char* prot_txt(enum mh_track_type flags)
 {
@@ -446,7 +470,6 @@ void addEvent_Dw(IRSB* sb, IRExpr* daddr, Int dsize,
     IRExpr*    data64 = NULL;
     IRExpr*    expd64;
 
-    tl_assert(clo_track_mem);
     tl_assert(isIRAtom(daddr));
     tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
 
@@ -484,7 +507,6 @@ static void addEvent_Dr(IRSB* sb, IRExpr* daddr, Int dsize, HWord ip)
 {
     IRExpr**   argv;
 
-    tl_assert(clo_track_mem);
     tl_assert(isIRAtom(daddr));
     tl_assert(dsize >= 1 && dsize <= MAX_DSIZE);
 
@@ -501,7 +523,6 @@ static void addEvent_Ir(IRSB* sb, HWord iaddr, UInt isize)
 {
     IRExpr**   argv;
 
-    tl_assert(clo_track_mem);
     tl_assert(isize >= 1 && isize <= MAX_DSIZE);
 
     /*  Emit:
@@ -566,14 +587,14 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 	    /* Remember pointer to current hw instruction */
 	    currIP = (HWord)st->Ist.IMark.addr;
 
-	    if (clo_track_mem) {
+	    if (enabled_tracking & MH_EXE) {
 		addEvent_Ir(sbOut, (HWord)st->Ist.IMark.addr,
 			    st->Ist.IMark.len);
 	    }
 	    break;
 
 	case Ist_WrTmp:
-	    if (clo_track_mem) {
+	    if (enabled_tracking & MH_READ) {
 		IRExpr* data = st->Ist.WrTmp.data;
 		if (data->tag == Iex_Load) {
 		    addEvent_Dr(sbOut, data->Iex.Load.addr,
@@ -583,7 +604,7 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 	    break;
 
 	case Ist_Store:
-	    if (clo_track_mem) {
+	    if (enabled_tracking & MH_WRITE) {
 		IRExpr* data  = st->Ist.Store.data;
 		addEvent_Dw(sbOut, st->Ist.Store.addr,
 			    sizeofIRType(typeOfIRExpr(tyenv, data)),
@@ -601,38 +622,51 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 	    tl_assert(!"Tell Sverker he forgot to implement Ist_LoadG.");
 	    break;
 
-	case Ist_Dirty:
-	    if (clo_track_mem) {
-		Int      dsize;
-		IRDirty* d = st->Ist.Dirty.details;
-		if (d->mFx != Ifx_None) {
-		    // This dirty helper accesses memory.  Collect the details.
-		    tl_assert(d->mAddr != NULL);
-		    tl_assert(d->mSize != 0);
-		    dsize = d->mSize;
-		    if (d->mFx == Ifx_Read || d->mFx == Ifx_Modify) addEvent_Dr(sbOut, d->mAddr, dsize, currIP);
-		    if (d->mFx == Ifx_Write || d->mFx == Ifx_Modify) addEvent_Dw(sbOut, d->mAddr, dsize, NULL, NULL, currIP);
+	case Ist_Dirty: {
+	    Int      dsize;
+	    IRDirty* d = st->Ist.Dirty.details;
+	    if (d->mFx != Ifx_None) {
+		// This dirty helper accesses memory.  Collect the details.
+		tl_assert(d->mAddr != NULL);
+		tl_assert(d->mSize != 0);
+		dsize = d->mSize;
+		if ((enabled_tracking & MH_READ)
+		    && (d->mFx == Ifx_Read || d->mFx == Ifx_Modify))
+		{
+		    addEvent_Dr(sbOut, d->mAddr, dsize, currIP);
 		}
-		else {
-		    tl_assert(d->mAddr == NULL);
-		    tl_assert(d->mSize == 0);
+		if ((enabled_tracking & MH_WRITE)
+		    && (d->mFx == Ifx_Write || d->mFx == Ifx_Modify))
+		{
+		    addEvent_Dw(sbOut, d->mAddr, dsize, NULL, NULL, currIP);
 		}
 	    }
+	    else {
+		tl_assert(d->mAddr == NULL);
+		tl_assert(d->mSize == 0);
+	    }
 	    break;
+	}
 
-	case Ist_CAS:
-	    if (clo_track_mem) {
-		Int    dataSize;
-		IRCAS*  cas = st->Ist.CAS.details;
-		IRExpr* data = cas->dataLo;
-		IRExpr* expd = cas->expdLo;
-		tl_assert(cas->addr != NULL);
-		tl_assert(cas->dataLo != NULL);
-		dataSize = sizeofIRType(typeOfIRExpr(tyenv, cas->dataLo));
-		tl_assert(dataSize == sizeofIRType(typeOfIRExpr(tyenv, cas->expdLo)));
-		if (cas->dataHi != NULL) {  /* a doubleword-CAS */
-		    IROp mergeOp;
-		    dataSize *= 2;
+	case Ist_CAS: {
+	    Int    dataSize;
+	    IRCAS*  cas = st->Ist.CAS.details;
+	    IRExpr* data = cas->dataLo;
+	    IRExpr* expd = cas->expdLo;
+	    IROp mergeOp;
+	    tl_assert(cas->addr != NULL);
+	    tl_assert(cas->dataLo != NULL);
+	    dataSize = sizeofIRType(typeOfIRExpr(tyenv, cas->dataLo));
+	    tl_assert(dataSize == sizeofIRType(typeOfIRExpr(tyenv, cas->expdLo)));
+
+	    if (cas->dataHi) { /* a doubleword-CAS */
+		dataSize *= 2;
+	    }
+	    if (enabled_tracking & MH_READ) {
+		addEvent_Dr(sbOut, cas->addr, dataSize, currIP);
+	    }
+	    if (enabled_tracking & MH_WRITE) {
+		if (cas->dataHi) {  /* a doubleword-CAS */
 		    switch (dataSize) {
 		    case  2:
 			mergeOp = Iop_8HLto16;   break;
@@ -646,31 +680,31 @@ IRSB* mh_instrument(VgCallbackClosure* closure,
 		    data = IRExpr_Binop(mergeOp, cas->dataHi, cas->dataLo);
 		    expd = IRExpr_Binop(mergeOp, cas->expdHi, cas->expdLo);
 		}
-		addEvent_Dr(sbOut, cas->addr, dataSize, currIP);
 		addEvent_Dw(sbOut, cas->addr, dataSize, expd, data, currIP);
 	    }
 	    break;
+	}
 
 	case Ist_LLSC: {
 	    IRType dataTy;
 	    if (st->Ist.LLSC.storedata == NULL) {
 		/* LL */
-		dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
-		if (clo_track_mem) addEvent_Dr(sbOut, st->Ist.LLSC.addr,
-					       sizeofIRType(dataTy), currIP);
+		if (enabled_tracking & MH_READ) {
+		    dataTy = typeOfIRTemp(tyenv, st->Ist.LLSC.result);
+		    addEvent_Dr(sbOut, st->Ist.LLSC.addr,
+				sizeofIRType(dataTy), currIP);
+		}
 	    }
-	    else {
+	    else if (enabled_tracking & MH_WRITE) {
 		/* SC */
 		dataTy = typeOfIRExpr(tyenv, st->Ist.LLSC.storedata);
-		if (clo_track_mem) {
-		    /* Todo:
-		     * Do real *conditional* store as we do for CAS above
-		     * This is trickier to do as we don't know until *after* the
-		     * original LLSC instruction if the store really happened.
-		     */
-		    addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
-				NULL, st->Ist.LLSC.storedata, currIP);
-		}
+		/* Todo:
+		 * Do real *conditional* store as we do for CAS above
+		 * This is trickier to do as we don't know until *after* the
+		 * original LLSC instruction if the store really happened.
+		 */
+		addEvent_Dw(sbOut, st->Ist.LLSC.addr, sizeofIRType(dataTy),
+			    NULL, st->Ist.LLSC.storedata, currIP);
 	    }
 	    break;
 	}
@@ -703,6 +737,9 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
 					    (sizeof(struct mh_region_t)
 					     + sizeof_hist_ix_vec));
 
+    if (!(enabled_tracking & MH_WRITE))
+	return;
+
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Tracking %u-words from %p to %p with history %u\n",
 		  word_sz, (void*)addr, (void*)(addr + size), history);
@@ -732,35 +769,25 @@ static void track_mem_write(Addr addr, SizeT size, unsigned word_sz, unsigned hi
     insert_nonoverlapping(rp);
 }
 
-static void remove_track_mem_block(Addr addr, SizeT size, enum mh_track_type type)
+static void untrack_mem_write(Addr addr, SizeT size)
 {
     Addr end = addr + size;
     struct mh_region_t* rp = region_lookup_maxle(addr);
 
     tl_assert2(rp && addr == rp->start && end == rp->end,
 	       "Could not find region to remove [%p -> %p]", addr, end);
-    tl_assert((type & rp->type) == type);
+    tl_assert(rp->type & MH_TRACK);
 
-    rp->type &= ~type;
     if (clo_trace_mem) {
-	if (rp->type & MH_TRACK) {
-	    VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
-		      rp->name, (void*)addr, (void*)(addr + size));
-	}
-	if (rp->type & MH_WRITE) {
-	    VG_(umsg)("TRACE: Make '%s' writable from %p to %p\n",
-		      rp->name, (void*)addr, (void*)(addr + size));
-	}
+	VG_(umsg)("TRACE: Untracking '%s' from %p to %p\n",
+		  rp->name, (void*)addr, (void*)(addr + size));
     }
+    rp->type &= ~MH_TRACK;
+
     if (!rp->type) {
 	region_remove(rp);
 	VG_(free)(rp);
     }
-}
-
-static void untrack_mem_write(Addr addr, SizeT size)
-{
-    remove_track_mem_block(addr, size, MH_TRACK);
 }
 
 static void track_able(Addr addr, SizeT size, Bool enabled)
@@ -768,7 +795,10 @@ static void track_able(Addr addr, SizeT size, Bool enabled)
     Addr end = addr + size;
     struct mh_region_t* rp = region_lookup_maxle(addr);
 
-    tl_assert2(rp && addr == rp->start && end == rp->end,
+    if (!rp)
+	return;
+
+    tl_assert2(addr == rp->start && end == rp->end,
 	       "Could not find region to %sable", enabled ? "en" : "dis");
 
     if (clo_trace_mem) {
@@ -805,6 +835,10 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 
     tl_assert(flags & (MH_WRITE | MH_READ | MH_EXE));
     tl_assert(!(flags & ~(MH_WRITE | MH_READ | MH_EXE)));
+
+    flags &= enabled_tracking;  /* ignore flags that we do not track */
+    if (!flags)
+	return;
 
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Set protection %s for '%s' from %p to %p\n",
@@ -888,12 +922,17 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
     Addr end = start + size;
     struct mh_region_t* rp, * pred = NULL;
 
+    tl_assert(flags & (MH_WRITE | MH_READ));
+    tl_assert(!(flags & MH_TRACK));
+
+    flags &= enabled_tracking;  /* ignore flags that we do not track */
+    if (!flags)
+	return;
+
     if (clo_trace_mem) {
 	VG_(umsg)("TRACE: Clear protection %s from %p to %p\n",
 		  prot_txt(flags), (void*)start, (void*)end);
     }
-    tl_assert(flags & (MH_WRITE | MH_READ));
-    tl_assert(!(flags & MH_TRACK));
 
     rp = region_lookup_maxle(start);
     if (rp) {
