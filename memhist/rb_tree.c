@@ -22,12 +22,14 @@ static void assert_error(const char* txt, const char* file, int line)
 void rb_tree_init(rb_tree *newTree,
 		  int  (*cmp)(rb_tree_node *a, rb_tree_node *b),
 		  int  (*cmp_key)(rb_tree_node *a, void *b_key),
+		  int  (*update_subtree)(rb_tree*, rb_tree_node*),
 		  void (*print_node)(rb_tree_node *a, int depth))
 {
     rb_tree_node *temp;
 
     newTree->cmp = cmp;
     newTree->cmp_key = cmp_key;
+    newTree->update_subtree = update_subtree;
     newTree->print_node = print_node;
 
     /*  see the comment in the rb_tree structure in red_black_tree.h */
@@ -61,6 +63,11 @@ static void left_rotate(rb_tree *tree, rb_tree_node *x)
     y->left = x;
     x->parent = y;
 
+    tree->update_subtree(tree, x);
+    tree->update_subtree(tree, y);
+    ASSERT(!(y->parent != &tree->root
+	     && tree->update_subtree(tree, y->parent)));
+
     ASSERT(!tree->nil.red);
 }
 
@@ -84,6 +91,11 @@ static void right_rotate(rb_tree *tree, rb_tree_node *y)
     }
     x->right = y;
     y->parent = x;
+
+    tree->update_subtree(tree, y);
+    tree->update_subtree(tree, x);
+    ASSERT(!(x->parent != &tree->root
+	     && tree->update_subtree(tree, x->parent)));
 
     ASSERT(!tree->nil.red);
 }
@@ -138,6 +150,12 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     clash = insert_helper(tree, x);
     if (clash) return clash;
     x->red = 1;
+
+    ASSERT(x->left == &tree->nil && x->right == &tree->nil);
+    for (y = x->parent; y != &tree->root; y = y->parent) {
+	if (!tree->update_subtree(tree, y))
+	    break;
+    }
     while (x->parent->red) { /* use sentinel instead of checking for root */
 	if (x->parent == x->parent->parent->left) {
 	    y = x->parent->parent->right;
@@ -408,10 +426,12 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
     rb_tree_node *x;
     rb_tree_node *nil =  &tree->nil;
     rb_tree_node *root = &tree->root;
+    rb_tree_node *p;
 
     y = ((z->left == nil) || (z->right == nil)) ? z : rb_tree_succ(tree, z);
     x = (y->left == nil) ? y->right : y->left;
-    if (root == (x->parent = y->parent)) {
+    x->parent = y->parent;
+    if (root == x->parent) {
 	root->left = x;
     } else {
 	if (y == y->parent->left) {
@@ -420,6 +440,12 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	    y->parent->right = x;
 	}
     }
+
+    for (p = x->parent; p != root; p = p->parent) {
+	if (!tree->update_subtree(tree, p))
+	    break;
+    }
+
     if (y != z) { /* y should not be nil in this case */
 
 	ASSERT(y != &tree->nil);
@@ -438,7 +464,13 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	} else {
 	    z->parent->right = y;
 	}
-    } else {
+
+	for (p = y; p != root; p = p->parent) {
+	    if (!tree->update_subtree(tree, p))
+		break;
+	}
+    }
+    else {
 	if (!(y->red)) remove_fixup(tree, x);
     }
 

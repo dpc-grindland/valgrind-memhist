@@ -10,9 +10,11 @@ typedef struct rb_tree_node
 
 typedef struct rb_tree
 {
-    /* cmp and cmp_key should return >0 if a > b, <0 if a < b, and 0 if equal */
     int  (*cmp)(rb_tree_node* a, rb_tree_node* b);
     int  (*cmp_key)(rb_tree_node* a, void* b_key);
+
+    int  (*update_subtree)(struct rb_tree*, rb_tree_node*);
+
     void (*print_node)(rb_tree_node*, int depth);
 
     /*  Sentinels used for root and for nil.
@@ -24,13 +26,22 @@ typedef struct rb_tree
     rb_tree_node nil;
 } rb_tree;
 
+
+/* cmp and cmp_key should return >0 if a > b, <0 if a < b, and 0 if equal */
 typedef int rb_tree_cmp_FT(rb_tree_node* a, rb_tree_node* b);
 typedef int rb_tree_cmp_key_FT(rb_tree_node* a, void* b_key);
+
+/* update_subtree should update node information about the entire sub-tree.
+   Return false if node was unchanged
+   and updates do therefor not need to propagate further towards root.
+ */
+typedef int rb_tree_update_subtree_FT(rb_tree*, rb_tree_node*);
 typedef void rb_tree_print_node_FT(rb_tree_node*, int depth);
 
 void rb_tree_init(rb_tree* newTree,
 		  rb_tree_cmp_FT*,
 		  rb_tree_cmp_key_FT*,
+		  rb_tree_update_subtree_FT*,
 		  rb_tree_print_node_FT*);
 rb_tree_node * rb_tree_insert(rb_tree*, rb_tree_node*);
 void rb_tree_print(rb_tree*);

@@ -39,6 +39,7 @@
 #include "pub_tool_mallocfree.h"
 
 #include "memhist.h"  // client requests
+
 #include "rb_tree.h"
 
 #define MH_DEBUG
@@ -51,6 +52,8 @@
 #  define MH_ASSERT2(C, FMT, ARGS...)
 #endif
 
+#define MIN(x,y) ((x) < (y) ? (x) : (y))
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
 
 /*------------------------------------------------------------*/
 /*--- Command line options                                 ---*/
@@ -144,6 +147,8 @@ struct mh_region_t {
     rb_tree_node node;
     Addr start;
     Addr end;
+    Addr subtree_min;
+    Addr subtree_max;
     const char* name;
     unsigned birth_time_stamp;
     unsigned readonly_time_stamp;
@@ -169,6 +174,37 @@ static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
     return region_cmp_key(a_node, (void*)b->start);
 }
 
+#define left_node(X) ((struct mh_region_t*)((X)->node.left))
+#define right_node(X) ((struct mh_region_t*)((X)->node.left))
+
+/* Update subtree_min & sub_tree_max
+   from node.start, node.end, node.left and node.right
+   Return false if node is unchanged.
+ */
+static int update_subtree(rb_tree* tree, rb_tree_node* node)
+{
+    struct mh_region_t* x = (struct mh_region_t*) node;
+    rb_tree_node* nil = &tree->nil;
+    Addr min = x->subtree_min;
+    Addr max = x->subtree_max;
+
+    if (x->node.left != nil) {
+	MH_ASSERT(left_node(x)->subtree_min <= left_node(x)->start);
+	x->subtree_min = MIN(left_node(x)->subtree_min, x->start);
+    }
+    else
+	x->subtree_min = x->start;
+
+    if (x->node.right != nil) {
+	MH_ASSERT(right_node(x)->subtree_max >= right_node(x)->end);
+	x->subtree_max = MAX(right_node(x)->subtree_max, x->end);
+    }
+    else
+	x->subtree_max = x->end;
+
+    return x->subtree_min != min || x->subtree_max != max;
+}
+
 static void region_print(rb_tree_node* a_node, int depth)
 {
     static char spaces[] = "                                                  ";
@@ -182,6 +218,8 @@ static struct rb_tree region_tree;
 static
 struct mh_region_t* region_insert(struct mh_region_t* rp)
 {
+    rp->subtree_min = rp->start;
+    rp->subtree_max = rp->end;
     return (struct mh_region_t*)rb_tree_insert(&region_tree,
 					       &rp->node);
 }
@@ -232,6 +270,63 @@ static void insert_nonoverlapping(struct mh_region_t* rp)
     tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
     tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
 }
+
+#ifdef MH_DEBUG
+static unsigned tree_lookup_steps = 0;
+static unsigned tree_shortcuts = 0;
+#endif
+
+static
+struct mh_region_t* region_lookup_min_overlap(Addr start, Addr end)
+{
+    struct mh_region_t* x = (struct mh_region_t*) region_tree.root.left;
+    struct mh_region_t* nil = (struct mh_region_t*) &region_tree.nil;
+    struct mh_region_t* min_overlap = NULL;
+#ifdef MH_DEBUG
+    int done = 0;
+#endif
+
+    while (x != nil) {
+    #ifdef MH_DEBUG
+	if (!done)
+	    ++tree_lookup_steps;
+	else
+	    ++tree_shortcuts;
+    #endif
+
+	if (end <= x->start) {
+	    if (end <= x->subtree_min) {
+	    #ifdef MH_DEBUG
+		done = 1;
+	    #else
+		break;
+	    #endif
+	    }
+	    else MH_ASSERT(!done);
+
+	    x = left_node(x);
+	}
+	else if (start >= x->end) {
+	    if (start >= x->subtree_max) {
+	    #ifdef MH_DEBUG
+		done = 1;
+	    #else
+		break;
+	    #endif
+	    }
+	    else MH_ASSERT(!done);
+
+	    x = right_node(x);
+	}
+	else {
+	    MH_ASSERT(!done);
+	    min_overlap = x;
+	    x = left_node(x);
+	}
+    }
+    return min_overlap;
+}
+
 
 
 /* ---------------------------------------------------------------------
@@ -297,10 +392,10 @@ static Int track_mem_access(Addr addr, SizeT size, Long data,
 {
     Addr start = addr;
     Addr end = addr + size;
-    struct mh_region_t* rp = region_lookup_maxle(addr);
+    struct mh_region_t* rp = region_lookup_min_overlap(addr, end);
     Bool got_a_hit = 0;
 
-    if (!rp || start >= rp->end) return 0;
+    if (!rp) return 0;
 
     do {
 	tl_assert(end > rp->start && start < rp->end);
@@ -1121,11 +1216,16 @@ static void mh_fini(Int exitcode)
 		      (void*)rp->start, (void*)rp->end);
 	}
     }
+#ifdef MH_DEBUG
+    VG_(umsg)("Tree lookup steps     = %u.\n", tree_lookup_steps);
+    VG_(umsg)("Tree lookup shortcuts = %u.\n", tree_shortcuts);
+#endif
 }
 
 static void mh_pre_clo_init(void)
 {
-    rb_tree_init(&region_tree, region_cmp, region_cmp_key, region_print);
+    rb_tree_init(&region_tree, region_cmp, region_cmp_key,
+		 update_subtree, region_print);
 
     VG_(details_name)("Memhist");
     VG_(details_version)(NULL);

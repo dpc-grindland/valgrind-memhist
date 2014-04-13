@@ -12,10 +12,11 @@ static void check_error(const char* txt, const char* file, int line)
 }
 
 
-typedef struct
+typedef struct Node
 {
     rb_tree_node rb_node;
     long key;
+    int cnt;
 }Node;
 
 int cmp(Node* a, Node* b)
@@ -28,10 +29,27 @@ int cmp_key(Node* a, void* b_key)
     return a->key - (long)b_key;
 }
 
+#define left_node(X) ((Node*) (X)->rb_node.left)
+#define right_node(X) ((Node*) (X)->rb_node.right)
+
+int update_subtree(rb_tree* t, Node* node)
+{
+    int old_cnt = node->cnt;
+
+    node->cnt = 1;
+    if (node->rb_node.left != &t->nil) {
+	node->cnt += left_node(node)->cnt;
+    }
+    if (node->rb_node.right != &t->nil) {
+	node->cnt += right_node(node)->cnt;
+    }
+    return node->cnt != old_cnt;
+}
+
 void print_node(Node* node, int depth)
 {
     static char spaces[] = "                                                  ";
-    printf("%.*s%li\n", depth*2, spaces, node->key);
+    printf("%.*s%li cnt=%d\n", depth*2, spaces, node->key, node->cnt);
 }
 
 int main()
@@ -47,6 +65,7 @@ int main()
     }
     rb_tree_init(&t, (rb_tree_cmp_FT*)cmp,
 		 (rb_tree_cmp_key_FT*)cmp_key,
+		 (rb_tree_update_subtree_FT*)update_subtree,
 		 (rb_tree_print_node_FT*)print_node);
 
     CHECK(!rb_tree_lookup_exact(&t, (void*)0));
@@ -54,6 +73,7 @@ int main()
     CHECK(!rb_tree_min(&t));
 
     for (i=0; i<max; i += 10) {
+	node[i].cnt = 1;
 	CHECK(rb_tree_insert(&t, &node[i].rb_node) == NULL);
 	for (j=0; j<=i; j++) {
 	    p = (Node*) rb_tree_lookup_exact(&t, (void*)j);
@@ -79,9 +99,12 @@ int main()
 	    CHECK(p);
 	    CHECK(p->key == 0);
 	}
+	//printf("Inserted %li:\n", i);
+	//rb_tree_print(&t);
     }
 
     for (i=5; i<max; i += 10) {
+	node[i].cnt = 1;
 	CHECK(rb_tree_insert(&t, &node[i].rb_node) == NULL);
 	for (j=0; j<=i; j++) {
 	    p = (Node*) rb_tree_lookup_exact(&t, (void*)j);
@@ -107,6 +130,8 @@ int main()
 	    CHECK(p);
 	    CHECK(p->key == 0);
 	}
+	//printf("Inserted %li:\n", i);
+	//rb_tree_print(&t);
     }
 
     for (i=5; i<max; i += 10) {
@@ -135,6 +160,8 @@ int main()
 	    CHECK(p);
 	    CHECK(p->key == 0);
 	}
+	//printf("Removed %li:\n", i);
+	//rb_tree_print(&t);
     }
     rb_tree_print(&t);
 }
