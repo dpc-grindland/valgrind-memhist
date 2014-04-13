@@ -133,10 +133,11 @@ struct mh_mem_access_t {
 
 static const char* prot_txt(enum mh_track_type flags)
 {
-    static const char* txt[] = {"NOWRITE", "NOREAD", "NOACCESS"};
-    tl_assert(flags & (MH_WRITE | MH_READ));
+    static const char* txt[] = {"NOWRITE", "NOREAD", "NOREAD+NOWRITE", "NOEXE",
+                                "NOWRITE+NOEXE", "NOREAD+NOEXE", "NOREAD+NOWRITE+NOEXE"};
+    tl_assert2(flags & (MH_WRITE | MH_READ | MH_EXE), "flags=%u", flags);
 
-    return txt[(flags & 3) - 1];
+    return txt[(flags & 7) - 1];
 }
 
 struct mh_region_t {
