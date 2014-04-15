@@ -161,6 +161,10 @@ struct mh_region_t {
     unsigned hist_ix_vec[0];
 };
 
+/*
+ * Callbacks for rb_tree:
+ */
+
 static int region_cmp_key(rb_tree_node* a_node, void* b_key)
 {
     struct mh_region_t* a = (struct mh_region_t*)a_node;
@@ -175,7 +179,7 @@ static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
 }
 
 #define left_node(X) ((struct mh_region_t*)((X)->node.left))
-#define right_node(X) ((struct mh_region_t*)((X)->node.left))
+#define right_node(X) ((struct mh_region_t*)((X)->node.right))
 
 /* Update subtree_min & sub_tree_max
    from node.start, node.end, node.left and node.right
@@ -190,14 +194,20 @@ static int update_subtree(rb_tree* tree, rb_tree_node* node)
 
     if (x->node.left != nil) {
 	MH_ASSERT(left_node(x)->subtree_min <= left_node(x)->start);
-	x->subtree_min = MIN(left_node(x)->subtree_min, x->start);
+	MH_ASSERT(left_node(x)->subtree_min < x->start);
+	x->subtree_min = left_node(x)->subtree_min;
     }
     else
 	x->subtree_min = x->start;
 
     if (x->node.right != nil) {
-	MH_ASSERT(right_node(x)->subtree_max >= right_node(x)->end);
-	x->subtree_max = MAX(right_node(x)->subtree_max, x->end);
+	if (!(right_node(x)->subtree_max >= right_node(x)->end)) {
+	    rb_tree_print(tree);
+	    VG_(umsg)("x = %p\n", x);
+	    tl_assert(!"CRASH!");
+	}
+	MH_ASSERT(right_node(x)->subtree_max > x->end);
+	x->subtree_max = right_node(x)->subtree_max;
     }
     else
 	x->subtree_max = x->end;
@@ -207,11 +217,19 @@ static int update_subtree(rb_tree* tree, rb_tree_node* node)
 
 static void region_print(rb_tree_node* a_node, int depth)
 {
-    static char spaces[] = "                                                  ";
     struct mh_region_t* a = (struct mh_region_t*)a_node;
-    VG_(umsg)("%.*s%p -> %p", depth, spaces, (void*)a->start, (void*)a->end);
+    int i;
+    for (i=0; i< depth; ++i) {
+	VG_(umsg)("  ");
+    }
+    VG_(umsg)("%p: %p -> %p min=%p max=%p\n", a,
+	      (void*)a->start, (void*)a->end,
+	      (void*)a->subtree_min, (void*)a->subtree_max);
 }
 
+/*
+ * Our tree of memory regions:
+ */
 
 static struct rb_tree region_tree;
 
@@ -261,14 +279,6 @@ struct mh_region_t* region_lookup_ming(Addr addr)
 {
     return (struct mh_region_t*)rb_tree_lookup_ming(&region_tree,
 						    (void*)addr);
-}
-
-static void insert_nonoverlapping(struct mh_region_t* rp)
-{
-    struct mh_region_t* clash = region_insert(rp);
-    tl_assert(!clash);
-    tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
-    tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
 }
 
 #ifdef MH_DEBUG
@@ -327,6 +337,21 @@ struct mh_region_t* region_lookup_min_overlap(Addr start, Addr end)
     return min_overlap;
 }
 
+static void insert_nonoverlapping(struct mh_region_t* rp)
+{
+    struct mh_region_t* clash;
+
+    tl_assert(region_lookup_min_overlap(rp->start, rp->end) == NULL);
+    clash = region_insert(rp);
+    tl_assert(!clash);
+    tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
+    tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
+}
+
+static void node_updated(struct mh_region_t* rp)
+{
+    rb_tree_node_updated(&region_tree, &rp->node);
+}
 
 
 /* ---------------------------------------------------------------------
@@ -968,6 +993,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 	    else if (rp->type == flags) {
 		/* extent start of region */
 		rp->start = start;
+		node_updated(rp);
 	    }
 	    else {
 		new_region(start, rp->start, name, flags);
@@ -986,6 +1012,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		struct mh_region_t* succ = region_succ(rp);
 		if (!succ || succ->start > end) {
 		    rp->end = end;
+		    node_updated(rp);
 		    return;
 		}
 		if (succ->type == flags) {
@@ -993,9 +1020,11 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		    region_remove(succ);
 		    VG_(free)(succ);
 		    rp->end = succ_end;
+		    node_updated(rp);
 		}
 		else {
 		    rp->end = succ->start;
+		    node_updated(rp);
 		    rp = succ;
 		    start = rp->start;
 		}
@@ -1040,6 +1069,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 		    Addr old_end = rp->end;
 		    enum mh_track_type new_flags = rp->type & ~flags;
 		    rp->end = start;
+		    node_updated(rp);
 		    if (new_flags) {
 			rp = new_region(start, old_end, rp->name, new_flags);
 		    }
@@ -1063,10 +1093,12 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 		if (new_flags) { /* split region */
 		    rp->type = new_flags;
 		    rp->end = end;
+		    node_updated(rp);
 		    new_region(end, old_end, rp->name, new_flags);
 		}
 		else { /* shrink region */
 		    rp->start = end;
+		    node_updated(rp);
 		    return;
 		}
 	    }
@@ -1086,6 +1118,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 	    Addr pred_start = pred->start;
 	    region_remove(pred);
 	    rp->start = pred_start;
+	    node_updated(rp);
 	}
 	pred = rp;
 	rp = region_succ(rp);
