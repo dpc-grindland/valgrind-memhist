@@ -161,6 +161,10 @@ struct mh_region_t {
     unsigned hist_ix_vec[0];
 };
 
+/*
+ * Callbacks for rb_tree:
+ */
+
 static int region_cmp_key(rb_tree_node* a_node, void* b_key)
 {
     struct mh_region_t* a = (struct mh_region_t*)a_node;
@@ -190,14 +194,16 @@ static int update_subtree(rb_tree* tree, rb_tree_node* node)
 
     if (x->node.left != nil) {
 	MH_ASSERT(left_node(x)->subtree_min <= left_node(x)->start);
-	x->subtree_min = MIN(left_node(x)->subtree_min, x->start);
+	MH_ASSERT(left_node(x)->subtree_min < x->start);
+	x->subtree_min = left_node(x)->subtree_min;
     }
     else
 	x->subtree_min = x->start;
 
     if (x->node.right != nil) {
 	MH_ASSERT(right_node(x)->subtree_max >= right_node(x)->end);
-	x->subtree_max = MAX(right_node(x)->subtree_max, x->end);
+	MH_ASSERT(right_node(x)->subtree_max > x->end);
+	x->subtree_max = right_node(x)->subtree_max;
     }
     else
 	x->subtree_max = x->end;
@@ -217,6 +223,9 @@ static void region_print(rb_tree_node* a_node, int depth)
 	      (void*)a->subtree_min, (void*)a->subtree_max);
 }
 
+/*
+ * Our tree of memory regions:
+ */
 
 static struct rb_tree region_tree;
 
@@ -266,14 +275,6 @@ struct mh_region_t* region_lookup_ming(Addr addr)
 {
     return (struct mh_region_t*)rb_tree_lookup_ming(&region_tree,
 						    (void*)addr);
-}
-
-static void insert_nonoverlapping(struct mh_region_t* rp)
-{
-    struct mh_region_t* clash = region_insert(rp);
-    tl_assert(!clash);
-    tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
-    tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
 }
 
 #ifdef MH_DEBUG
@@ -332,6 +333,16 @@ struct mh_region_t* region_lookup_min_overlap(Addr start, Addr end)
     return min_overlap;
 }
 
+static void insert_nonoverlapping(struct mh_region_t* rp)
+{
+    struct mh_region_t* clash;
+
+    tl_assert(region_lookup_min_overlap(rp->start, rp->end) == NULL);
+    clash = region_insert(rp);
+    tl_assert(!clash);
+    tl_assert(!(clash = region_pred(rp)) || clash->end <= rp->start);
+    tl_assert(!(clash = region_succ(rp)) || clash->start >= rp->end);
+}
 
 static void node_updated(struct mh_region_t* rp)
 {

@@ -40,6 +40,7 @@ void rb_tree_init(rb_tree *newTree,
     temp = &newTree->root;
     temp->parent = temp->left = temp->right = &newTree->nil;
     temp->red = 0;
+    rb_tree_check(newTree);
 }
 
 
@@ -147,6 +148,8 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     rb_tree_node *y;
     rb_tree_node *clash;
 
+    rb_tree_check(tree);
+
     clash = insert_helper(tree, x);
     if (clash) return clash;
     x->red = 1;
@@ -193,8 +196,7 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     }
     tree->root.left->red = 0;
 
-    ASSERT(!tree->nil.red);
-    ASSERT(!tree->root.red);
+    rb_tree_check(tree);
     return NULL;
 }
 
@@ -474,6 +476,9 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	if (!(y->red)) remove_fixup(tree, x);
     }
 
+    rb_tree_check(tree);
+}
+
 
 void rb_tree_node_updated(rb_tree* tree, rb_tree_node* node)
 {
@@ -486,6 +491,28 @@ void rb_tree_node_updated(rb_tree* tree, rb_tree_node* node)
     }
     rb_tree_check(tree);
 }
-    ASSERT(!tree->nil.red);
+
+static void check_node(rb_tree* tree, rb_tree_node* x, rb_tree_node* parent)
+{
+    if (x != &tree->nil) {
+	ASSERT(x);
+	ASSERT(x->parent == parent);
+	ASSERT(tree->update_subtree(tree, x) == 0);
+	check_node(tree, x->left, x);
+	check_node(tree, x->right, x);
+    }
 }
+
+void rb_tree_check(rb_tree* tree)
+{
+    ASSERT(!tree->nil.red);
+    ASSERT(tree->nil.left == &tree->nil);
+    ASSERT(tree->nil.right == &tree->nil);
+    //ASSERT(tree->nil.parent == &tree->nil);
+    ASSERT(!tree->root.red);
+    ASSERT(tree->root.right == &tree->nil);
+    ASSERT(tree->root.parent == &tree->nil);
+    check_node(tree, tree->root.left, &tree->root);
+}
+
 
