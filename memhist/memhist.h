@@ -57,4 +57,8 @@ typedef
                             VG_USERREQ__CLEAR_PROTECTION,        \
 			    (_qzz_addr), (_qzz_len), (_qzz_prot), 0, 0)
 
+
+#define VALGRIND_SET_WRITABLE(A,S) VALGRIND_CLEAR_PROTECTION((A), (S), VG_MEM_NOWRITE)
+#define VALGRIND_SET_READONLY(A,S,N) VALGRIND_SET_PROTECTION((A), (S), (N), VG_MEM_NOWRITE)
+
 #endif // __MEMHIST_H
