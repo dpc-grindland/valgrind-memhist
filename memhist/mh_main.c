@@ -42,7 +42,7 @@
 
 #include "rb_tree.h"
 
-#define MH_DEBUG
+//#define MH_DEBUG
 
 #ifdef MH_DEBUG
 #  define MH_ASSERT tl_assert
