@@ -175,7 +175,7 @@ static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
 }
 
 #define left_node(X) ((struct mh_region_t*)((X)->node.left))
-#define right_node(X) ((struct mh_region_t*)((X)->node.left))
+#define right_node(X) ((struct mh_region_t*)((X)->node.right))
 
 /* Update subtree_min & sub_tree_max
    from node.start, node.end, node.left and node.right
