@@ -474,6 +474,18 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	if (!(y->red)) remove_fixup(tree, x);
     }
 
+
+void rb_tree_node_updated(rb_tree* tree, rb_tree_node* node)
+{
+    rb_tree_node *root = &tree->root;
+    rb_tree_node *p;
+
+    for (p = node; p != root; p = p->parent) {
+	if (!tree->update_subtree(tree, p))
+	    break;
+    }
+    rb_tree_check(tree);
+}
     ASSERT(!tree->nil.red);
 }
 

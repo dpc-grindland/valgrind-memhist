@@ -328,6 +328,11 @@ struct mh_region_t* region_lookup_min_overlap(Addr start, Addr end)
 }
 
 
+static void node_updated(struct mh_region_t* rp)
+{
+    rb_tree_node_updated(&region_tree, &rp->node);
+}
+
 
 /* ---------------------------------------------------------------------
  * Runtime "helper" functions called for every data load, data store
@@ -968,6 +973,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 	    else if (rp->type == flags) {
 		/* extent start of region */
 		rp->start = start;
+		node_updated(rp);
 	    }
 	    else {
 		new_region(start, rp->start, name, flags);
@@ -986,6 +992,7 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		struct mh_region_t* succ = region_succ(rp);
 		if (!succ || succ->start > end) {
 		    rp->end = end;
+		    node_updated(rp);
 		    return;
 		}
 		if (succ->type == flags) {
@@ -993,9 +1000,11 @@ static void set_mem_flags(Addr start, SizeT size, const char* name,
 		    region_remove(succ);
 		    VG_(free)(succ);
 		    rp->end = succ_end;
+		    node_updated(rp);
 		}
 		else {
 		    rp->end = succ->start;
+		    node_updated(rp);
 		    rp = succ;
 		    start = rp->start;
 		}
@@ -1040,6 +1049,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 		    Addr old_end = rp->end;
 		    enum mh_track_type new_flags = rp->type & ~flags;
 		    rp->end = start;
+		    node_updated(rp);
 		    if (new_flags) {
 			rp = new_region(start, old_end, rp->name, new_flags);
 		    }
@@ -1063,10 +1073,12 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 		if (new_flags) { /* split region */
 		    rp->type = new_flags;
 		    rp->end = end;
+		    node_updated(rp);
 		    new_region(end, old_end, rp->name, new_flags);
 		}
 		else { /* shrink region */
 		    rp->start = end;
+		    node_updated(rp);
 		    return;
 		}
 	    }
@@ -1086,6 +1098,7 @@ static void clear_mem_flags(Addr start, SizeT size, enum mh_track_type flags)
 	    Addr pred_start = pred->start;
 	    region_remove(pred);
 	    rp->start = pred_start;
+	    node_updated(rp);
 	}
 	pred = rp;
 	rp = region_succ(rp);
