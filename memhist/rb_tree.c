@@ -64,10 +64,10 @@ static void left_rotate(rb_tree *tree, rb_tree_node *x)
     y->left = x;
     x->parent = y;
 
-    tree->update_subtree(tree, x);
-    tree->update_subtree(tree, y);
+    tree->update_subtree(tree, x, 1);
+    tree->update_subtree(tree, y, 1);
     ASSERT(!(y->parent != &tree->root
-	     && tree->update_subtree(tree, y->parent)));
+	     && tree->update_subtree(tree, y->parent, 0)));
 
     ASSERT(!tree->nil.red);
 }
@@ -93,10 +93,10 @@ static void right_rotate(rb_tree *tree, rb_tree_node *y)
     x->right = y;
     y->parent = x;
 
-    tree->update_subtree(tree, y);
-    tree->update_subtree(tree, x);
+    tree->update_subtree(tree, y, 1);
+    tree->update_subtree(tree, x, 1);
     ASSERT(!(x->parent != &tree->root
-	     && tree->update_subtree(tree, x->parent)));
+	     && tree->update_subtree(tree, x->parent, 0)));
 
     ASSERT(!tree->nil.red);
 }
@@ -156,7 +156,7 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
 
     ASSERT(x->left == &tree->nil && x->right == &tree->nil);
     for (y = x->parent; y != &tree->root; y = y->parent) {
-	if (!tree->update_subtree(tree, y))
+	if (!tree->update_subtree(tree, y, 1))
 	    break;
     }
     while (x->parent->red) { /* use sentinel instead of checking for root */
@@ -444,7 +444,7 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
     }
 
     for (p = x->parent; p != root; p = p->parent) {
-	if (!tree->update_subtree(tree, p))
+	if (!tree->update_subtree(tree, p, 1))
 	    break;
     }
 
@@ -468,7 +468,7 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	}
 
 	for (p = y; p != root; p = p->parent) {
-	    if (!tree->update_subtree(tree, p))
+	    if (!tree->update_subtree(tree, p, 1))
 		break;
 	}
     }
@@ -486,7 +486,7 @@ void rb_tree_node_updated(rb_tree* tree, rb_tree_node* node)
     rb_tree_node *p;
 
     for (p = node; p != root; p = p->parent) {
-	if (!tree->update_subtree(tree, p))
+	if (!tree->update_subtree(tree, p, 1))
 	    break;
     }
     rb_tree_check(tree);
@@ -497,7 +497,7 @@ static void check_node(rb_tree* tree, rb_tree_node* x, rb_tree_node* parent)
     if (x != &tree->nil) {
 	ASSERT(x);
 	ASSERT(x->parent == parent);
-	ASSERT(tree->update_subtree(tree, x) == 0);
+	ASSERT(tree->update_subtree(tree, x, 0) == 0);
 	check_node(tree, x->left, x);
 	check_node(tree, x->right, x);
     }

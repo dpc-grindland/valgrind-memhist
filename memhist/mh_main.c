@@ -185,30 +185,38 @@ static int region_cmp(rb_tree_node* a_node, rb_tree_node* b_node)
    from node.start, node.end, node.left and node.right
    Return false if node is unchanged.
  */
-static int update_subtree(rb_tree* tree, rb_tree_node* node)
+static int update_subtree(rb_tree* tree, rb_tree_node* node, int do_update)
 {
     struct mh_region_t* x = (struct mh_region_t*) node;
     rb_tree_node* nil = &tree->nil;
-    Addr min = x->subtree_min;
-    Addr max = x->subtree_max;
+    Addr new_min = x->subtree_min;
+    Addr new_max = x->subtree_max;
 
     if (x->node.left != nil) {
 	MH_ASSERT(left_node(x)->subtree_min <= left_node(x)->start);
 	MH_ASSERT(left_node(x)->subtree_min < x->start);
-	x->subtree_min = left_node(x)->subtree_min;
+	new_min = left_node(x)->subtree_min;
     }
     else
-	x->subtree_min = x->start;
+	new_min = x->start;
 
     if (x->node.right != nil) {
 	MH_ASSERT(right_node(x)->subtree_max >= right_node(x)->end);
 	MH_ASSERT(right_node(x)->subtree_max > x->end);
-	x->subtree_max = right_node(x)->subtree_max;
+	new_max = right_node(x)->subtree_max;
     }
     else
-	x->subtree_max = x->end;
+	new_max = x->end;
 
-    return x->subtree_min != min || x->subtree_max != max;
+    if (new_min != x->subtree_min || new_max != x->subtree_max) {
+	if (do_update) {
+	    x->subtree_min = new_min;
+	    x->subtree_max = new_max;
+	}
+	return 1;
+    }
+    else
+	return 0;
 }
 
 static void region_print(rb_tree_node* a_node, int depth)

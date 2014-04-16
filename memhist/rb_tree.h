@@ -13,7 +13,7 @@ typedef int rb_tree_cmp_key_FT(rb_tree_node* a, void* b_key);
    Return false if node was unchanged, i.e no updates need to propagate further
    towards root.
  */
-typedef int rb_tree_update_subtree_FT(rb_tree*, rb_tree_node*);
+typedef int rb_tree_update_subtree_FT(rb_tree*, rb_tree_node*, int do_update);
 
 /* print tree node (indented with 'depth' on one line)
 */

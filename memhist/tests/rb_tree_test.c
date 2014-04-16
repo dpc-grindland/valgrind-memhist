@@ -32,18 +32,24 @@ int cmp_key(Node* a, void* b_key)
 #define left_node(X) ((Node*) (X)->rb_node.left)
 #define right_node(X) ((Node*) (X)->rb_node.right)
 
-int update_subtree(rb_tree* t, Node* node)
+int update_subtree(rb_tree* t, Node* node, int do_update)
 {
-    int old_cnt = node->cnt;
+    int new_cnt = 1;
 
-    node->cnt = 1;
     if (node->rb_node.left != &t->nil) {
-	node->cnt += left_node(node)->cnt;
+	new_cnt += left_node(node)->cnt;
     }
     if (node->rb_node.right != &t->nil) {
-	node->cnt += right_node(node)->cnt;
+	new_cnt += right_node(node)->cnt;
     }
-    return node->cnt != old_cnt;
+    if (new_cnt != node->cnt) {
+	if (do_update) {
+	    node->cnt = new_cnt;
+	}
+	return 1;
+    }
+    else
+	return 0;
 }
 
 void print_node(Node* node, int depth)
