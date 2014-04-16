@@ -207,9 +207,14 @@ static int update_subtree(rb_tree* tree, rb_tree_node* node)
 
 static void region_print(rb_tree_node* a_node, int depth)
 {
-    static char spaces[] = "                                                  ";
     struct mh_region_t* a = (struct mh_region_t*)a_node;
-    VG_(umsg)("%.*s%p -> %p", depth, spaces, (void*)a->start, (void*)a->end);
+    int i;
+    for (i=0; i< depth; ++i) {
+	VG_(umsg)("  ");
+    }
+    VG_(umsg)("%p: %p -> %p min=%p max=%p\n", a,
+	      (void*)a->start, (void*)a->end,
+	      (void*)a->subtree_min, (void*)a->subtree_max);
 }
 
 
