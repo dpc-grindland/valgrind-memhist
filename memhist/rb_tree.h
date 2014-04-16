@@ -1,3 +1,24 @@
+typedef struct rb_tree rb_tree;
+typedef struct rb_tree_node rb_tree_node;
+
+/*
+ * Callbacks that an implementator need to supply:
+ */
+
+/* cmp and cmp_key should return >0 if a > b, <0 if a < b, and 0 if equal */
+typedef int rb_tree_cmp_FT(rb_tree_node* a, rb_tree_node* b);
+typedef int rb_tree_cmp_key_FT(rb_tree_node* a, void* b_key);
+
+/* update_subtree should update node information about the entire sub-tree.
+   Return false if node was unchanged, i.e no updates need to propagate further
+   towards root.
+ */
+typedef int rb_tree_update_subtree_FT(rb_tree*, rb_tree_node*);
+
+/* print tree node (indented with 'depth' on one line)
+*/
+typedef void rb_tree_print_node_FT(rb_tree_node*, int depth);
+
 
 typedef struct rb_tree_node
 {
@@ -10,12 +31,10 @@ typedef struct rb_tree_node
 
 typedef struct rb_tree
 {
-    int  (*cmp)(rb_tree_node* a, rb_tree_node* b);
-    int  (*cmp_key)(rb_tree_node* a, void* b_key);
-
-    int  (*update_subtree)(struct rb_tree*, rb_tree_node*);
-
-    void (*print_node)(rb_tree_node*, int depth);
+    rb_tree_cmp_FT* cmp;
+    rb_tree_cmp_key_FT* cmp_key;
+    rb_tree_update_subtree_FT* update_subtree;
+    rb_tree_print_node_FT* print_node;
 
     /*  Sentinels used for root and for nil.
         root.left should always point to the node which is the root of the tree.
@@ -27,16 +46,6 @@ typedef struct rb_tree
 } rb_tree;
 
 
-/* cmp and cmp_key should return >0 if a > b, <0 if a < b, and 0 if equal */
-typedef int rb_tree_cmp_FT(rb_tree_node* a, rb_tree_node* b);
-typedef int rb_tree_cmp_key_FT(rb_tree_node* a, void* b_key);
-
-/* update_subtree should update node information about the entire sub-tree.
-   Return false if node was unchanged
-   and updates do therefor not need to propagate further towards root.
- */
-typedef int rb_tree_update_subtree_FT(rb_tree*, rb_tree_node*);
-typedef void rb_tree_print_node_FT(rb_tree_node*, int depth);
 
 void rb_tree_init(rb_tree* newTree,
 		  rb_tree_cmp_FT*,

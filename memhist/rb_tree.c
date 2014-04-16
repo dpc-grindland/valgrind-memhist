@@ -20,10 +20,10 @@ static void assert_error(const char* txt, const char* file, int line)
  * Initialize a new empty tree
  */
 void rb_tree_init(rb_tree *newTree,
-		  int  (*cmp)(rb_tree_node *a, rb_tree_node *b),
-		  int  (*cmp_key)(rb_tree_node *a, void *b_key),
-		  int  (*update_subtree)(rb_tree*, rb_tree_node*),
-		  void (*print_node)(rb_tree_node *a, int depth))
+		  rb_tree_cmp_FT* cmp,
+		  rb_tree_cmp_key_FT* cmp_key,
+		  rb_tree_update_subtree_FT* update_subtree,
+		  rb_tree_print_node_FT* print_node)
 {
     rb_tree_node *temp;
 
