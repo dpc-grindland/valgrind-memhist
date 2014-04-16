@@ -477,7 +477,8 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	    z->parent->right = y;
 	}
 
-	for (p = y; p != root; p = p->parent) {
+	tree->update_subtree(tree, y, 1);
+	for (p = y->parent; p != root; p = p->parent) {
 	    if (!tree->update_subtree(tree, p, 1))
 		break;
 	}
