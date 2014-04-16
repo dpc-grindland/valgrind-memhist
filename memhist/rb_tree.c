@@ -16,6 +16,12 @@ static void assert_error(const char* txt, const char* file, int line)
 #  define ASSERT(C) tl_assert(C)
 #endif
 
+#ifdef HARD_DEBUG
+#  define CHECK_TREE(T,N) rb_tree_check(T,N)
+#else
+#  define CHECK_TREE(T,N)
+#endif
+
 /*
  * Initialize a new empty tree
  */
@@ -40,7 +46,7 @@ void rb_tree_init(rb_tree *newTree,
     temp = &newTree->root;
     temp->parent = temp->left = temp->right = &newTree->nil;
     temp->red = 0;
-    rb_tree_check(newTree);
+    CHECK_TREE(newTree, NULL);
 }
 
 
@@ -148,7 +154,7 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     rb_tree_node *y;
     rb_tree_node *clash;
 
-    rb_tree_check(tree);
+    CHECK_TREE(tree, NULL);
 
     clash = insert_helper(tree, x);
     if (clash) return clash;
@@ -196,7 +202,7 @@ rb_tree_node* rb_tree_insert(rb_tree *tree, rb_tree_node *x)
     }
     tree->root.left->red = 0;
 
-    rb_tree_check(tree);
+    CHECK_TREE(tree, x);
     return NULL;
 }
 
@@ -430,6 +436,8 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
     rb_tree_node *root = &tree->root;
     rb_tree_node *p;
 
+    CHECK_TREE(tree, z);
+
     y = ((z->left == nil) || (z->right == nil)) ? z : rb_tree_succ(tree, z);
     x = (y->left == nil) ? y->right : y->left;
     x->parent = y->parent;
@@ -447,6 +455,8 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	if (!tree->update_subtree(tree, p, 1))
 	    break;
     }
+
+    CHECK_TREE(tree, x);
 
     if (y != z) { /* y should not be nil in this case */
 
@@ -471,12 +481,13 @@ void rb_tree_remove(rb_tree *tree, rb_tree_node *z)
 	    if (!tree->update_subtree(tree, p, 1))
 		break;
 	}
+	CHECK_TREE(tree, y);
     }
     else {
 	if (!(y->red)) remove_fixup(tree, x);
-    }
 
-    rb_tree_check(tree);
+	CHECK_TREE(tree, x);
+    }
 }
 
 
@@ -489,21 +500,22 @@ void rb_tree_node_updated(rb_tree* tree, rb_tree_node* node)
 	if (!tree->update_subtree(tree, p, 1))
 	    break;
     }
-    rb_tree_check(tree);
+    CHECK_TREE(tree, node);
 }
 
-static void check_node(rb_tree* tree, rb_tree_node* x, rb_tree_node* parent)
+static void check_node(rb_tree* tree, rb_tree_node* x, rb_tree_node* parent,
+		       rb_tree_node* offender)
 {
     if (x != &tree->nil) {
 	ASSERT(x);
 	ASSERT(x->parent == parent);
 	ASSERT(tree->update_subtree(tree, x, 0) == 0);
-	check_node(tree, x->left, x);
-	check_node(tree, x->right, x);
+	check_node(tree, x->left, x, offender);
+	check_node(tree, x->right, x, offender);
     }
 }
 
-void rb_tree_check(rb_tree* tree)
+void rb_tree_check(rb_tree* tree, rb_tree_node* offender)
 {
     ASSERT(!tree->nil.red);
     ASSERT(tree->nil.left == &tree->nil);
@@ -512,7 +524,7 @@ void rb_tree_check(rb_tree* tree)
     ASSERT(!tree->root.red);
     ASSERT(tree->root.right == &tree->nil);
     ASSERT(tree->root.parent == &tree->nil);
-    check_node(tree, tree->root.left, &tree->root);
+    check_node(tree, tree->root.left, &tree->root, offender);
 }
 
 
