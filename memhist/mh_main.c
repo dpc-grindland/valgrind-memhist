@@ -416,6 +416,8 @@ static void report_store_in_block(struct mh_region_t* rp,
     }
 }
 
+static unsigned protection_disable_counter = 0;
+
 static Int track_mem_access(Addr addr, SizeT size, Long data,
 			    enum mh_track_type type)
 {
@@ -432,7 +434,7 @@ static Int track_mem_access(Addr addr, SizeT size, Long data,
 	if (rp->enabled) {
 	    switch (type) {
 	    case MH_WRITE:
-		if (rp->type & MH_WRITE) {
+		if ((rp->type & MH_WRITE) && !protection_disable_counter) {
 		    VG_(umsg)("Provoking SEGV: %u bytes WRITTEN to protected "
 			      "region '%s' at addr %p at time %u:\n",
 			      (unsigned)size, rp->name, (void*)addr,
@@ -445,7 +447,7 @@ static Int track_mem_access(Addr addr, SizeT size, Long data,
 		break;
 
 	    case MH_READ:
-		if (rp->type & MH_READ) {
+		if ((rp->type & MH_READ) && !protection_disable_counter) {
 		    VG_(umsg)("Provoking SEGV: %u bytes READ from protected "
 			      "region '%s' at addr %p at time %u:\n",
 			      (unsigned)size, rp->name, (void*)addr,
@@ -455,7 +457,7 @@ static Int track_mem_access(Addr addr, SizeT size, Long data,
 		break;
 
 	    case MH_EXE:
-		if (rp->type & MH_EXE) {
+		if ((rp->type & MH_EXE) && !protection_disable_counter) {
 		    VG_(umsg)("Provoking SEGV: %u-byte instruction executed in protected "
 			      "region '%s' at addr %p at time %u:\n",
 			      (unsigned)size, rp->name, (void*)addr,
@@ -1169,6 +1171,16 @@ static Bool mh_handle_client_request(ThreadId tid, UWord* arg, UWord* ret)
     case VG_USERREQ__CLEAR_PROTECTION:
 	clear_mem_flags(arg[1], arg[2], (enum mh_track_type)arg[3]);
 	*ret = -1;
+	break;
+
+    case VG_USERREQ__DISABLE_PROTECTION:
+	protection_disable_counter++;
+	break;
+
+    case VG_USERREQ__ENABLE_PROTECTION:
+	tl_assert2(protection_disable_counter > 0,
+		   "Unmatched call to VALGRIND_ENABLE_PROTECTION");
+	protection_disable_counter--;
 	break;
 
     default:
